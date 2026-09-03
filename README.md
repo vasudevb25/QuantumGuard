@@ -1,6 +1,4 @@
-<<<<<<< HEAD
-# QuantumGuard-
-=======
+
 # QuantumGuard
 
 **QuantumGuard** is an enhanced tamper-evident provenance logging framework that captures kernel-level system events, verifies capture completeness, constructs provenance graphs, and prepares forensic evidence for secure integrity verification.
@@ -398,4 +396,4 @@ QuantumGuard introduces five major research components:
 # License
 
 This project is developed for academic research and educational purposes as part of the **QuantumGuard Tamper-Evident Provenance Framework**.
->>>>>>> d6434b3 (Phase 1&2 completed:)
+
