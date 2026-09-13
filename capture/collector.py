@@ -1,47 +1,71 @@
 import json
+import os
 import signal
 import subprocess
 import sys
+from threading import Lock
 
 from capture.models import RawEvent
-from capture.sequence import SequenceManager
 from capture.cca import CCA
-from capture.database import save_event, save_attestation
+from core.store import get_store
+
+_HOME = os.path.expanduser("~")
+
+
+class SequenceManager:
+    """Thread-safe monotonically increasing sequence generator."""
+
+    def __init__(self):
+        self.counter = 0
+        self.lock = Lock()
+
+    def next(self):
+        with self.lock:
+            self.counter += 1
+            return self.counter
 
 
 class EBPFCollector:
-    """Kernel provenance collector with CCA and PostgreSQL persistence."""
+    """
+    QuantumGuard Phase 1
 
+    eBPF → JSON → Filter → Sequence → CCA → PostgreSQL
+    """
+
+    # Noisy per-user tool installs, not filtered by UID because they run
+    # as the logged-in user. Derived from $HOME so this is portable across
+    # machines instead of tied to one developer's account.
     IGNORE_PREFIXES = (
         "/snap/",
-        "/home/profmoriarty/.local/",
-        "/home/profmoriarty/go/",
+        f"{_HOME}/.local/",
+        f"{_HOME}/go/",
     )
 
     def __init__(self):
         self.sequence = SequenceManager()
         self.cca = CCA()
+        self.store = get_store()
         self.loader = None
         self.running = True
 
-    def _shutdown(self, *_):
-        """Gracefully terminate loader."""
+    def shutdown(self, *_):
+        """Gracefully stop the eBPF loader."""
         self.running = False
 
         if self.loader and self.loader.poll() is None:
             self.loader.terminate()
+
             try:
                 self.loader.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 self.loader.kill()
 
-        print("\nCollector stopped.")
+        print("\nQuantumGuard collector stopped.")
         sys.exit(0)
 
     def start(self):
-        """Start eBPF loader and process provenance events."""
 
-        signal.signal(signal.SIGINT, self._shutdown)
+        signal.signal(signal.SIGINT, self.shutdown)
 
         self.loader = subprocess.Popen(
             ["sudo", "./ebpf/loader"],
@@ -51,7 +75,7 @@ class EBPFCollector:
             bufsize=1,
         )
 
-        print("=== QuantumGuard eBPF Collector Started ===")
+        print("=== QuantumGuard Collector Started ===")
 
         for line in self.loader.stdout:
 
@@ -68,7 +92,6 @@ class EBPFCollector:
                 print(f"[LOADER] {line}")
                 continue
 
-            # Parse JSON event
             try:
                 data = json.loads(line)
             except json.JSONDecodeError:
@@ -83,7 +106,7 @@ class EBPFCollector:
                 event_type=data["type"],
             )
 
-            # -------- Selective Provenance Filtering --------
+            # ---------- Provenance Filters ----------
 
             if event.uid < 1000:
                 continue
@@ -91,21 +114,22 @@ class EBPFCollector:
             if event.filename.startswith(self.IGNORE_PREFIXES):
                 continue
 
-            # ------------------------------------------------
+            # ---------------------------------------
 
             event.sequence = self.sequence.next()
 
             attestation = self.cca.verify(event.sequence)
 
-            save_event(event)
-            save_attestation(attestation)
+            self.store.save_event(event)
+            self.store.save_attestation(attestation)
 
             print(
                 f"[{event.sequence}] "
-                f"{event.comm} (PID {event.pid}) → {event.filename}"
+                f"{event.comm} (PID {event.pid}) → "
+                f"{event.filename}"
             )
 
-        self._shutdown()
+        self.shutdown()
 
 
 if __name__ == "__main__":

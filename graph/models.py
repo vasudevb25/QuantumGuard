@@ -9,5 +9,10 @@ class ProvenanceEvent:
     comm: str
     filename: str
     event_type: int
-    parent_pid: int | None = None
+
+    process_id: str | None = None
     process_hash: str | None = None
+
+    parent_node: str | None = None
+    parent_pid: int | None = None
+    parent_kind: str | None = None

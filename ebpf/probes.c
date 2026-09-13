@@ -21,15 +21,23 @@ struct {
 SEC("tracepoint/syscalls/sys_enter_execve")
 int trace_execve(struct trace_event_raw_sys_enter *ctx)
 {
-    char comm[16];
+    /*
+     * Real-user filter, done in-kernel so system/service accounts never
+     * even reach the ring buffer. uid < 1000 is the login-user threshold
+     * on virtually every Linux distribution; capture/collector.py applies
+     * the exact same check again in userspace as defence in depth, so the
+     * two must never disagree.
+     *
+     * This replaces an earlier version that instead only allowed comm
+     * exactly "code", "python" or "bash" through - a hardcoded, IDE- and
+     * workflow-specific allowlist that made the whole system unable to
+     * see, for example, a poisoning attack launched as a "curl | sh"
+     * one-liner. A provenance system that only watches processes an
+     * attacker is unlikely to be named cannot make a completeness claim.
+     */
+    __u32 uid = (__u32)bpf_get_current_uid_gid();
 
-    bpf_get_current_comm(&comm, sizeof(comm));
-
-    /* Process filter */
-
-    if (__builtin_memcmp(comm, "code", 4) != 0 &&
-        __builtin_memcmp(comm, "python", 6) != 0 &&
-        __builtin_memcmp(comm, "bash", 4) != 0)
+    if (uid < 1000)
         return 0;
 
     struct event *e;
@@ -43,9 +51,9 @@ int trace_execve(struct trace_event_raw_sys_enter *ctx)
 
     e->timestamp = bpf_ktime_get_ns();
     e->pid = id >> 32;
-    e->uid = (__u32)bpf_get_current_uid_gid();
+    e->uid = uid;
 
-    __builtin_memcpy(e->comm, comm, sizeof(comm));
+    bpf_get_current_comm(&e->comm, sizeof(e->comm));
 
     const char *filename = (const char *)ctx->args[0];
 

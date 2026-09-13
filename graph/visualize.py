@@ -1,79 +1,35 @@
 import pickle
-import networkx as nx
 import matplotlib.pyplot as plt
-
-# ---------------------------------------------------
-# Load graph
-# ---------------------------------------------------
+import networkx as nx
 
 with open("graphs/provenance_graph.gpickle", "rb") as f:
     G = pickle.load(f)
 
-# ---------------------------------------------------
-# Better layout
-# ---------------------------------------------------
-
+# Use Graphviz if available
 try:
-    # Requires graphviz installed
     pos = nx.nx_agraph.graphviz_layout(G, prog="dot")
 except Exception:
     pos = nx.spring_layout(
         G,
-        k=1.8,
-        iterations=150,
-        seed=42
+        seed=42,
+        k=2,
+        iterations=200
     )
 
-# ---------------------------------------------------
-# Split node types
-# ---------------------------------------------------
-
-process_nodes = [
+processes = [
     n for n, d in G.nodes(data=True)
     if d["type"] == "process"
 ]
 
-file_nodes = [
+files = [
     n for n, d in G.nodes(data=True)
     if d["type"] == "file"
 ]
 
-# ---------------------------------------------------
-# Labels
-# ---------------------------------------------------
-
 labels = {
-    n: d.get("label", n)
+    n: d["label"]
     for n, d in G.nodes(data=True)
 }
-
-# ---------------------------------------------------
-# Draw
-# ---------------------------------------------------
-
-plt.figure(figsize=(18, 12))
-
-nx.draw_networkx_nodes(
-    G,
-    pos,
-    nodelist=process_nodes,
-    node_color="#4F9DDE",
-    node_size=2200,
-    edgecolors="black",
-    linewidths=1.2,
-    label="Process"
-)
-
-nx.draw_networkx_nodes(
-    G,
-    pos,
-    nodelist=file_nodes,
-    node_color="#7ED957",
-    node_size=1700,
-    edgecolors="black",
-    linewidths=1.2,
-    label="File"
-)
 
 exec_edges = [
     (u, v)
@@ -87,25 +43,40 @@ spawn_edges = [
     if d["relation"] == "SPAWNS"
 ]
 
-nx.draw_networkx_edges(
-    G,
-    pos,
-    edgelist=exec_edges,
-    edge_color="#555555",
-    arrows=True,
-    arrowsize=18,
-    width=1.8
+plt.figure(figsize=(18, 12))
+
+nx.draw_networkx_nodes(
+    G, pos,
+    nodelist=processes,
+    node_color="#4F9DDE",
+    node_size=2600,
+    edgecolors="black"
+)
+
+nx.draw_networkx_nodes(
+    G, pos,
+    nodelist=files,
+    node_color="#6FCF97",
+    node_size=2000,
+    edgecolors="black",
+    node_shape="s"
 )
 
 nx.draw_networkx_edges(
-    G,
-    pos,
+    G, pos,
+    edgelist=exec_edges,
+    edge_color="#555555",
+    arrows=True,
+    width=2
+)
+
+nx.draw_networkx_edges(
+    G, pos,
     edgelist=spawn_edges,
-    edge_color="#D62728",
+    edge_color="#E63946",
     style="dashed",
     arrows=True,
-    arrowsize=18,
-    width=2
+    width=2.5
 )
 
 nx.draw_networkx_labels(
@@ -121,22 +92,20 @@ plt.title(
     fontsize=18,
     weight="bold"
 )
+
 plt.figtext(
     0.02,
     0.02,
-    "Gray → EXECUTES    |    Red Dashed → SPAWNS",
-    fontsize=10,
-    bbox=dict(facecolor="white", alpha=0.8)
+    "Blue = Process | Green = Executable File | Red Dashed = Process Spawn",
+    fontsize=10
 )
 
-plt.legend(scatterpoints=1)
 plt.axis("off")
 plt.tight_layout()
 
 plt.savefig(
     "graphs/provenance_graph.png",
-    dpi=300,
-    bbox_inches="tight"
+    dpi=300
 )
 
 plt.show()
