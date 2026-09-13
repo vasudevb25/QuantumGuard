@@ -137,7 +137,6 @@ def main(argv: list[str] | None = None) -> int:
     all_parser.add_argument("--output", default="evidence/sealed_graph.json")
     all_parser.set_defaults(func=all_steps)
     args = parser.parse_args(argv)
-    config.init_dirs()
     args.func(args)
     return 0
 

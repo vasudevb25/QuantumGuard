@@ -91,11 +91,11 @@ KEYSTORE_PASSPHRASE = os.getenv(
 ED25519 = "Ed25519"
 MLDSA = "ML-DSA-65"
 
-# ==========================================================
-# CREATE DIRECTORIES
-# ==========================================================
-
-
-def init_dirs():
-    for d in (GRAPH_DIR, MODEL_DIR, KEY_DIR, EVIDENCE_DIR):
-        os.makedirs(d, exist_ok=True)
+# No blanket init_dirs() here on purpose: main.py used to call one before
+# every subcommand, which meant `sudo python main.py capture` on a fresh
+# checkout created graphs/, models/ and keys/ as root too - even though
+# capture never touches them - and every later non-sudo command then hit
+# PermissionError. Each consumer creates only the directory it actually
+# needs, right when it needs it: FileStore.__init__ (core/store.py),
+# ProvenanceGraphService.save (graph/service.py), GraphSAGE.save
+# (detection/model.py), and KeyStore.load_or_create (crypto/integrity.py).

@@ -165,7 +165,7 @@ build output, gitignored). Re-run this after any change to `ebpf/probes.c`.
 `main.py` is the single entry point for every phase:
 
 ```bash
-sudo python main.py capture              # Phase 1/2 - Ctrl+C to stop
+python  main.py capture                  # Phase 1/2 - prompts for sudo itself; Ctrl+C to stop
 python  main.py graph                    # Phase 3 - builds the provenance graph
 python  main.py train --epochs 100       # Phase 4 - trains the GNN (mixes in the real graph)
 python  main.py detect                   # Phase 4 - rules + GNN, writes a detection report
@@ -173,6 +173,15 @@ python  main.py seal                     # Phase 5 - Merkle-seals + signs the gr
 python  main.py evaluate                 # Phase 7 - survivability metrics
 python  main.py all                      # graph -> detect -> seal -> evaluate, one command
 ```
+
+**Never run `capture` with an outer `sudo`.** `capture/collector.py` already invokes
+`sudo ./ebpf/loader` internally for just the tiny C loader that needs
+kernel privileges - the Python process itself, and everything it writes,
+stays as your normal user. `sudo python main.py capture` instead elevates
+the *whole* process, so every file/directory it touches (`graphs/`,
+`models/`, `keys/`, `evidence/`) gets created root-owned, and every
+later command fails with `PermissionError` until you `sudo chown -R
+$(id -u):$(id -g) graphs models keys evidence` to undo it.
 
 Each step's output:
 
