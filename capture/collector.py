@@ -6,17 +6,25 @@ import sys
 from threading import Lock
 
 from capture.models import RawEvent
-from capture.cca import CCA
+from capture.cca import CCA, SessionManager, save_certificate
+from core import config
 from core.store import get_store
 
 _HOME = os.path.expanduser("~")
 
 
 class SequenceManager:
-    """Thread-safe monotonically increasing sequence generator."""
+    """Thread-safe monotonically increasing sequence generator.
 
-    def __init__(self):
-        self.counter = 0
+    `start` is the highest sequence already in the store. Resuming from
+    it rather than from zero is what keeps completeness provable across
+    collector restarts - a counter that resets would collide with the
+    primary key of events already captured, and would make every
+    restart look like a sequence discontinuity.
+    """
+
+    def __init__(self, start: int = 0):
+        self.counter = start
         self.lock = Lock()
 
     def next(self):
@@ -41,12 +49,25 @@ class EBPFCollector:
         f"{_HOME}/go/",
     )
 
-    def __init__(self):
-        self.sequence = SequenceManager()
-        self.cca = CCA()
+    def __init__(self, run_id: str | None = None):
         self.store = get_store()
+        self.session = SessionManager(self.store, run_id)
+
+        resume = self.session.open()
+        start = self.session.resumed_from
+
+        self.sequence = SequenceManager(start)
+        self.cca = CCA(run_id=self.session.run_id, start=start)
         self.loader = None
         self.running = True
+
+        if resume is not None:
+            # The time the collector was down is a genuine gap in the
+            # record. Writing it as an attestation means it reads later
+            # as documented downtime rather than as deletion.
+            self.store.save_attestation(resume)
+            print(f"[session] resuming at sequence {start + 1} "
+                  f"(run {self.session.run_id[:8]})")
 
     def shutdown(self, *_):
         """Gracefully stop the eBPF loader."""
@@ -59,6 +80,22 @@ class EBPFCollector:
                 self.loader.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 self.loader.kill()
+
+        # Seal the session: a signed statement of exactly what this run
+        # claims to have captured, and which sequences it lost.
+        try:
+            certificate = self.cca.certificate()
+            path = save_certificate(
+                certificate,
+                f"{config.EVIDENCE_DIR}/completeness_"
+                f"{self.session.run_id[:8]}.json")
+            missing = len(certificate["body"]["attested_missing"])
+            print(f"[cca] {certificate['body']['events_observed']} events, "
+                  f"{missing} attested missing -> {path}")
+        except Exception as exc:
+            print(f"[cca] could not write completeness certificate: {exc}")
+
+        self.session.close(self.sequence.counter)
 
         print("\nQuantumGuard collector stopped.")
         sys.exit(0)

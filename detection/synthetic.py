@@ -1,33 +1,3 @@
-"""
-Training-data generation for the poisoning detector.
-
-This module owns everything needed to turn "a graph" into "a labelled
-training set" for `detection/model.py`, because there is no public dataset
-of *poisoned provenance graphs* (DARPA TC / OpTC label attacks, not
-tampering with the audit record itself). Four responsibilities live here,
-kept in one file because they form a single pipeline and are only ever
-used together:
-
-  1. generate()      - synthetic base graphs with the same schema NetworkX
-                        shape the real Phase 3 builder emits (used because
-                        one capture session alone has too few distinct
-                        subgraphs to train on).
-  2. windows()        - slices a real captured graph into overlapping
-                        sequence windows, so some training data reflects
-                        THIS host's actual behaviour rather than only the
-                        synthetic distribution.
-  3. TamperGenerator  - the label source: applies one of four realistic
-                        "attacker covering their tracks" strategies to a
-                        clean base graph and records which nodes it
-                        touched (label = 1).
-  4. build_base_graphs / build_samples / split / standardiser
-                      - assembles (1)-(3) into train/val/test splits of
-                        feature matrices, ready for detection/model.py.
-
-Splits are made at the level of BASE graphs, before tampering, so a clean
-and a tampered version of the same window can never land in different
-splits (that would leak).
-"""
 
 from __future__ import annotations
 

@@ -1,16 +1,142 @@
 # QuantumGuard
 
-**QuantumGuard** is a host-based provenance security system for Linux. It
-captures process-execution events at the kernel level with eBPF, verifies
-that no events were silently lost (Capture Completeness Attestation),
-reconstructs a causal provenance graph, detects provenance-poisoning
-attacks with a rule engine and a GraphSAGE GNN, and finally seals the
-graph with Merkle-tree partitions and hybrid Ed25519 + ML-DSA (post-quantum)
-signatures.
+A host-based provenance security system for Linux. It captures
+process-execution events in the kernel with eBPF, proves whether any
+were lost, reconstructs a causal provenance graph, detects tampering
+with that graph, seals it under hybrid classical and post-quantum
+signatures, anchors the most valuable evidence outside the host, and
+quantifies how much of it would survive a compromise.
 
-> Research focus: making event loss _provable_ rather than assumed away,
-> and treating the provenance record itself as an asset an attacker will
-> try to falsify - so it gets the same tamper-evidence a ledger would.
+> The premise: every graph-based forensic system assumes its input is
+> an honest record. That assumption fails against the adversary who
+> matters most — one who has obtained root, and therefore has the same
+> privileges as the logging system itself. QuantumGuard treats the audit
+> record as the thing under attack.
+
+**Status: all seven phases implemented.** 76 tests pass with no
+PostgreSQL, eBPF or root. Limitations are stated in
+[Known limitations](#known-limitations) rather than left for a reader to
+discover.
+
+---
+
+## Measured results
+
+Everything below is produced by `python -m tests.benchmark`, 15 trials
+per cell. These are not quoted from a previous run — regenerate them and
+you get the same shape.
+
+### Detection — can each layer see each attack?
+
+| Attack | Attacker | Detected | By rules | By GNN |
+|---|---|---|---|---|
+| deletion | crude | 15/15 | 15/15 | 15/15 |
+| deletion | sophisticated | 15/15 | 15/15 | 15/15 |
+| reorder | crude | 15/15 | 15/15 | 15/15 |
+| **reorder** | **sophisticated** | **15/15** | **0/15** | **15/15** |
+| forgery | crude | 15/15 | 15/15 | 15/15 |
+| forgery | sophisticated | 15/15 | 15/15 | 15/15 |
+| timeshift | crude | 15/15 | 15/15 | 15/15 |
+| timeshift | sophisticated | 15/15 | 15/15 | 15/15 |
+
+The bold row is why the learned component exists. A sophisticated
+reorder swaps sequence numbers *and* timestamps together, so every
+deterministic invariant remains satisfied and the rule engine sees
+nothing. The GNN catches it in all 15 trials on structural grounds. One
+row of this table is the entire argument for not shipping rules alone.
+
+### Integrity — what the cryptographic layer catches
+
+| Attack | Crude | Sophisticated |
+|---|---|---|
+| deletion | 15/15 | 15/15 |
+| reorder | 15/15 | 15/15 |
+| forgery | 15/15 | 15/15 |
+| timeshift | 15/15 | 15/15 |
+
+**100%, with no training data and no distributional assumption.** This
+is the guarantee the project rests on. If a sealed record changed, the
+hash does not match — regardless of how sophisticated the attacker is,
+and regardless of whether the GNN was right. The learned detector is a
+second line on top of this, not a substitute for it.
+
+### Risk scoring — separation between clean and tampered
+
+```
+clean captures    (15 runs): mean 0.021   max 0.075
+tampered captures (15 runs): mean 0.364   min 0.228
+```
+
+| Threshold | Clean runs anchoring anything | Tampered runs anchored |
+|---|---|---|
+| 0.10 | 0/15 | 15/15 |
+| 0.15 | 0/15 | 15/15 |
+| **0.20** | **0/15** | **15/15** |
+| 0.25 | 0/15 | 11/15 |
+| 0.30 | 0/15 | 8/15 |
+
+The Tier-2 threshold is **calibrated on this separation, not chosen**.
+An earlier guessed value of 0.25 missed roughly a quarter of tampered
+runs; 0.20 sits inside the gap between the highest clean score (0.075)
+and the lowest tampered score (0.228).
+
+### Anchoring cost — does cost follow risk?
+
+| | Partitions | Externally anchored | Ledger transactions |
+|---|---|---|---|
+| 15 clean runs | 300 | 0 | **0** |
+| 15 tampered runs | 304 | 189 | **16** |
+
+A clean capture consumes nothing. A compromised one anchors 189
+partitions in 16 transactions — **11.8× batching compression** — because
+Tier-2 members share one second-order Merkle tree and each keeps an
+inclusion proof into it.
+
+### Survivability — evidence remaining after a compromise
+
+| Damage | PIS | EPR | GRR | RA | FSI |
+|---|---|---|---|---|---|
+| 0% | 100.00 | 100.00 | 100.00 | 100.00 | 100.00 |
+| 15% | 85.00 | 100.00 | 75.10 | 100.00 | 89.28 |
+| 30% | 70.00 | 93.00 | 46.55 | 100.00 | 76.24 |
+| 50% | 50.00 | 78.50 | 27.27 | 100.00 | 62.52 |
+| 75% | 25.00 | 54.50 | 19.75 | 100.00 | 48.34 |
+
+*(edge-removal mode; `node` and `window` modes are in the benchmark
+output and behave comparably)*
+
+### What sealing is worth, measured
+
+The same attack — delete 25% and fabricate replacements — evaluated with
+and without the Phase 5 sealed evidence available:
+
+| | PIS | EPR | GRR | RA | FSI |
+|---|---|---|---|---|---|
+| with sealing | 75.75 | 98.50 | 64.93 | **100.00** | 83.66 |
+| without sealing | 0.00 | 98.50 | 64.93 | **80.80** | 56.13 |
+
+72 relations were fabricated. With sealed evidence the system rejected
+every one of them; without it, it accepted them as authentic. **Recovery
+Accuracy +19.20 points.** This quantifies what Phase 5 buys rather than
+asserting it.
+
+### GNN detector
+
+Trained on 260 synthetic base graphs plus windows of real capture,
+40 epochs, CPU, under one minute:
+
+| Split | Precision | Recall | F1 | AUC |
+|---|---|---|---|---|
+| Validation — node | 0.751 | 0.717 | 0.733 | 0.946 |
+| Test — node | 0.775 | 0.611 | 0.684 | 0.937 |
+| Test — graph | 1.000 | 1.000 | 1.000 | — |
+
+Node-level F1 in the high sixties is the honest number. The label marks
+every node a corruption operator touched, including nodes at the
+periphery of a deletion whose own features barely change — those are
+genuinely ambiguous, and the ceiling is a property of the labelling
+scheme rather than the architecture. Graph-level, which is the decision
+the system actually makes, is 1.00.
 
 ---
 
@@ -20,471 +146,364 @@ signatures.
  execve()
     |
     v
- eBPF probe (ebpf/probes.c)          kernel-side UID filter, ring buffer
+ eBPF probe (ebpf/probes.c)        kernel-side filter, ring buffer
     |
     v
- loader (ebpf/loader.c)              reads the ring buffer, emits JSON lines
+ capture/collector.py              Phase 1  sequence numbers, CCA,
+ capture/cca.py                             session continuity,
+    |                                       SIGNED completeness certificate
+    v
+ core/store.py                     PostgreSQL <-- QG_STORE --> JSON files
     |
     v
- capture/collector.py                sequence numbers + CCA + userspace filters
+ graph/service.py                  Phase 2/3  dedupe -> validate ->
+    |                                         execve-chain parent inference
+    +---> graphs/provenance_graph.gpickle
     |
     v
- core/store.py                       PostgreSQL  <-- QG_STORE=auto|db|file -->  FileStore (JSON)
-    |
-    v
- graph/service.py (Phase 3)          dedupe -> validate -> enrich -> build DiGraph
-    |
-    +---> graphs/provenance_graph.gpickle, provenance.graphml
-    |
-    v
- detection/ (Phase 4)                RuleEngine (10 invariants) + GraphSAGE GNN
+ detection/                        Phase 4  10 deterministic rules
+ detector.py, model.py,                     + 2-layer GraphSAGE
+ features.py, synthetic.py
     |
     +---> evidence/detection_report.json
     |
     v
- crypto/integrity.py (Phase 5)       Merkle partitions, hash chain, Ed25519+ML-DSA
-    |
+ crypto/integrity.py               Phase 5  Merkle partitions, hash chain,
+    |                                       Ed25519 + ML-DSA-65 strict-AND
     +---> evidence/sealed_graph.json
     |
     v
- evaluation/main.py (Phase 7)        controlled poisoning + recovery survivability metrics
+ anchoring/                        Phase 6  risk scoring -> 3 tiers
+ risk.py, ledger.py, service.py             -> external anchor
+    |
+    +---> ledger/anchor_ledger.json   (deliberately NOT under evidence/)
+    +---> evidence/anchoring_report.json
+    |
+    v
+ evaluation/main.py                Phase 7  PIS, EPR, GRR, RA, FSI
+    |
+    +---> evaluation/report.json
 ```
 
-Every stage after capture can also run **entirely offline**: set
-`QG_STORE=file` and nothing here touches PostgreSQL, eBPF, or root - see
-[Running without PostgreSQL or eBPF](#running-without-postgresql-or-ebpf).
+Every stage after capture runs **entirely offline** with
+`QG_STORE=file` — no PostgreSQL, no eBPF, no root.
+
+---
+
+## The seven phases
+
+### Phase 1 — Provenance capture with completeness attestation
+
+An eBPF program on the `sys_enter_execve` tracepoint. In-kernel capture
+matters adversarially: a user-space monitor is a process an attacker
+with root can kill, trace or interpose; a kernel probe observes every
+program launch before it can act.
+
+Each event receives a monotonic sequence number, and any discontinuity
+is recorded as an attestation. That is what makes the downstream
+distinction decidable — a gap *with* an attestation is capture loss, a
+gap *without* one is deletion. No reported system makes that
+distinction.
+
+Two properties beyond gap detection:
+
+- **Continuity across restarts.** `SessionManager` resumes from the
+  highest sequence already stored and records the downtime as an
+  explicit `SESSION_GAP`. A counter that reset to 1 could only attest
+  within one session and would collide with the primary key of events
+  already captured.
+- **Signature.** `CompletenessCertificate` covers a whole sequence
+  range, names every gap inside it, and is signed with Ed25519 and
+  ML-DSA. A third party with the public key can verify what the
+  collector asserted and detect any later edit to that assertion. A gap
+  record that is only checkable locally is a log entry, not an
+  attestation.
+
+### Phase 2/3 — Normalisation and graph construction
+
+Deduplication, temporal validation with the reason for every discard
+recorded, and parent-process inference.
+
+The inference exploits a property of `execve`: at tracepoint invocation
+the fork has already happened, so the process identifier belongs to the
+new image while `comm` still holds the name of the image being replaced
+— in practice the invoking shell. The parent's identity is carried in
+the event itself and needs no guessing. An earlier version approximated
+the parent as "the most recent process under the same uid", which is
+invalid the moment two things run concurrently.
+
+### Phase 4 — Poisoning detection
+
+**Ten deterministic invariants** that a correctly captured graph must
+satisfy: process-hash recomputation, temporal and causal inversion,
+duplicate sequence, dangling edge, attribute conflict, orphan process,
+self-loop, impossible timestamp, and the CCA-aware sequence gap. No
+training data; no false positives on a well-formed graph.
+
+**A two-layer GraphSAGE network** for what the rules were not written to
+catch. 38 features per node across structural, temporal and attribute
+families; mean aggregation over the symmetric adjacency, giving each
+node a 2-hop receptive field matched to the perturbation radius of the
+corruption operators.
+
+GraphSAGE specifically because it is *inductive*: spectral methods like
+GCN bind their filter to the training graph's Laplacian, and the
+deployment requirement here is to score unseen graphs from unseen hosts
+without retraining.
+
+**Fusion is rule-priority.** Any critical or high violation forces a
+tampered verdict; the network can only *add* detections, never overturn
+a proven one.
+
+Training labels come from controlled corruption — there is no public
+corpus of poisoned provenance graphs, and DARPA OpTC labels intrusions
+rather than record modification, which is a disjoint label space. A
+`sophistication` parameter makes half the simulated attackers recompute
+`process_hash`, maintain temporal consistency and clean up orphans,
+which forces the model onto structural signals rather than a single
+give-away attribute.
+
+### Phase 5 — Integrity protection
+
+Three layers, each catching what the others cannot:
+
+| Layer | Catches |
+|---|---|
+| Merkle root per partition | any modified relation or node attribute |
+| `prev_record_hash` chain | deletion or reordering of a whole partition |
+| Ed25519 + ML-DSA-65, strict AND | forgery of the record itself, now and post-quantum |
+
+The leaf hash covers the full sealed attributes of **both endpoint
+nodes**, not just the edge — so editing a node's timestamp changes the
+leaf even though no edge moved. Leaves and internal nodes use different
+domain-separation prefixes, closing the second-preimage attack on naive
+Merkle trees.
+
+Verification is strict AND: forgery requires breaking an elliptic-curve
+problem *and* a lattice problem simultaneously, and a future break of
+either alone does not silently invalidate the archive.
+
+Keys are held in a passphrase-protected store (scrypt → AES-256-GCM).
+
+### Phase 6 — Risk-adaptive anchoring
+
+Signing proves evidence was not *edited*. Anchoring is what survives
+evidence being *destroyed* — an adversary at root can delete the entire
+local archive, signatures included, and a hash chain that exists only on
+the wiped machine proves nothing afterwards.
+
+Anchoring everything is unaffordable; anchoring nothing is useless. This
+is the cost Baseri et al. (2025) quantify and answer with risk-adaptive
+anchoring — a proposal they never implemented. This phase is that
+implementation.
+
+**Risk scoring** is a weighted sum over six signals, each normalised to
+[0,1] and each deliberately legible so an auditor can disagree with it:
+
+| Signal | Weight |
+|---|---|
+| tamper alert present | 0.20 |
+| rule violations in range | 0.25 |
+| GNN suspicion | 0.25 |
+| privilege activity (uid transitions, root execution) | 0.15 |
+| unattested sequence gaps | 0.10 |
+| rare executed images | 0.05 |
+
+Plus two **hard escalation rules**, named explicitly rather than hidden
+inside a scoring function: a tamper alert and a blocking rule violation
+both force Tier 1 regardless of the arithmetic. Which rule fired is
+recorded on every score.
+
+**Three tiers:**
+
+- **Tier 1 — immediate.** Anchored without delay. "Without delay" does
+  not mean "alone": several urgent partitions produced in the same pass
+  share one transaction, because holding none of them back costs nothing
+  and paying N fees for simultaneous evidence is the waste the risk
+  model exists to avoid.
+- **Tier 2 — batched.** Held until the buffer fills, then a
+  second-order Merkle tree is built over the members' *already-signed
+  roots* and the single batch root is anchored. Each member keeps the
+  sibling path proving its root sits under the anchored batch root, so
+  batching costs no provability.
+- **Tier 3 — local.** The Phase 5 hash chain only. No ledger
+  transaction. `verify_anchor` reports Tier 3 as passing *with its
+  limitation named* rather than silently.
+
+### Phase 7 — Forensic survivability
+
+Five measures answering what no reviewed system asks: how much evidence
+is still usable, and how much of the attack path can still be walked?
+
+| | Measure |
+|---|---|
+| **PIS** | fraction of sealed relations still present **and** verifying |
+| **EPR** | fraction of originally captured events that survived |
+| **GRR** | fraction of causal *reachability* retained |
+| **RA** | accuracy of what the system asserts is authentic |
+| **FSI** | weighted composite |
+
+Two design points worth stating:
+
+**GRR is measured over ancestor-descendant pairs, not edges.** An
+investigator does not ask how many edges are left; they ask whether they
+can still get from the phishing email to the exfiltration. A deleted
+edge mid-chain destroys far more reachability than one at a leaf, and
+counting edges misses that entirely.
+
+**Recovery produces a classification, not restored bytes.** Deleted
+evidence is gone. What sealing makes possible is establishing, for every
+relation the archive attests to, whether it is `intact`, `missing`
+(provable deletion) or `unsealed` (provable insertion). That is what
+lets an investigator say "these 62 relations were deleted after capture"
+rather than "some events seem to be missing".
+
+Where a deleted process sat between two survivors, a bridge edge is
+inserted marked `inferred=True`. Bridges count toward GRR — restoring
+reachability is exactly what they do — and are excluded from RA, because
+crediting them would let the system score itself on its own guesses.
+
+---
+
+## Quick start
+
+```bash
+pip install -r requirements.txt
+python -m tests.run_all                      # 76 tests
+python main.py demo --partition-size 16      # full offline demonstration
+python -m tests.benchmark                    # regenerate every number above
+```
+
+No PostgreSQL, no eBPF, no root required for any of those.
+
+Full operational guide: **[RUN.md](RUN.md)**.
 
 ---
 
 ## Repository structure
 
 ```
-QuantumGuard/
-├── ebpf/                    Phase 1 - kernel capture (C)
-│   ├── probes.c                tracepoint/syscalls/sys_enter_execve, ring buffer
-│   ├── loader.c                userspace loader, prints JSON events to stdout
-│   ├── vmlinux.h               generated kernel type info (bpftool btf dump)
-│   └── Makefile
-│
-├── capture/                 Phase 1/2 - collection, sequencing, completeness
-│   ├── collector.py             orchestrates the loader subprocess -> store
-│   ├── cca.py                   Capture Completeness Attestation
-│   └── models.py                RawEvent
-│
-├── graph/                   Phase 3 - provenance graph construction
-│   ├── service.py               dedupe / validate / enrich / build (the schema contract
-│   │                             detection/ and crypto/ depend on - read its docstring)
-│   ├── models.py                ProvenanceEvent
-│   ├── main.py                  `python -m graph.main` CLI
-│   └── visualize.py             matplotlib rendering -> graphs/provenance_graph.png
-│
-├── detection/                Phase 4 - poisoning detection
-│   ├── features.py              38-dim node feature extraction (structural/temporal/attribute)
-│   ├── synthetic.py             synthetic graphs, real-graph windowing, tampering
-│   │                             strategies, and train/val/test dataset assembly
-│   ├── model.py                 GraphSAGE (pure NumPy), Adam, metrics, training CLI
-│   └── detector.py               RuleEngine (10 invariants) + GNN fusion, inference CLI
-│
-├── crypto/                   Phase 5 - integrity protection
-│   └── integrity.py             Merkle tree, partitioning, KeyStore, hybrid
-│                                 Ed25519/ML-DSA signing, verification, CLI
-│
-├── evaluation/                Phase 7 - forensic survivability
-│   └── main.py                   controlled poisoning + recovery + PIS/EPR/GRR/RA/FSI
-│
-├── core/                      shared infrastructure
-│   ├── config.py                 every environment-overridable setting
-│   └── store.py                  PostgreSQLStore / FileStore behind one interface
-│
-├── database/
-│   └── schema.sql                 raw_events, cca_attestation (Phase 1/2), graph_partitions,
-│                                   detection_reports, capture_sessions (Phase 4/5) - one
-│                                   file, every statement is CREATE ... IF NOT EXISTS
-│
-├── tests/                     offline unit tests (no Postgres/eBPF/root needed)
-│   └── test_all.py                `python -m tests.test_all` - 27 tests, one file
-│
-├── main.py                    single CLI entry point for every phase
-└── requirements.txt
+capture/          Phase 1  eBPF collector, CCA, session continuity
+  cca.py                   gap detection + signed completeness certificate
+  collector.py             sequence assignment, session resume
+graph/            Phase 2/3  normalisation and graph construction
+detection/        Phase 4  rule engine + GraphSAGE
+  detector.py              10 invariants, rule/GNN fusion
+  features.py              38-dimensional node encoding
+  model.py                 GraphSAGE, Adam, training loop
+  synthetic.py             graph generation + tamper generator (labels)
+crypto/           Phase 5  Merkle, hash chain, hybrid signing
+anchoring/        Phase 6  risk scoring, ledger, tiered anchoring
+  risk.py                  six-signal model + escalation rules
+  ledger.py                append-only chained ledger; Fabric interface
+  service.py               tier assignment, second-order batching
+evaluation/       Phase 7  attack simulation, recovery, five measures
+core/                      config and the storage boundary
+tests/
+  test_all.py              Phases 1-5            (27 tests)
+  test_phase67.py          Phases 6-7 and CCA    (46 tests)
+  run_all.py               both                  (76 tests)
+  benchmark.py             reproducible measured results
 ```
-
----
-
-## Setup
-
-### 1. System dependencies (for real kernel capture)
-
-```bash
-sudo apt update
-sudo apt install clang llvm bpftool libbpf-dev build-essential \
-                  graphviz graphviz-dev postgresql postgresql-contrib
-```
-
-You only need this section for **live capture**. Graph construction,
-detection, crypto, evaluation and the test suite all run without it - see
-[Running without PostgreSQL or eBPF](#running-without-postgresql-or-ebpf).
-
-### 2. Python environment
-
-```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-```
-
-### 3. Database (skip this for the offline/FileStore path)
-
-```bash
-sudo -u postgres createdb provenance
-sudo -u postgres psql -d provenance -c \
-  "CREATE USER quantumguard WITH PASSWORD 'StrongPassword123'; \
-   GRANT ALL PRIVILEGES ON DATABASE provenance TO quantumguard;"
-
-sudo -u postgres psql -d provenance -f database/schema.sql
-sudo -u postgres psql -d provenance -c \
-  "GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO quantumguard; \
-   GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO quantumguard;"
-```
-
-Using a different host, user, password or database name? Set `QG_DB_URL`
-instead of editing `core/config.py` - see [Configuration](#configuration).
-
-### 4. Build the eBPF probe
-
-```bash
-make -C ebpf
-```
-
-Produces `ebpf/loader`, `ebpf/probes.o`, `ebpf/probes.skel.h` (all
-build output, gitignored). Re-run this after any change to `ebpf/probes.c`.
-
----
-
-## Running the full pipeline
-
-`main.py` is the single entry point for every phase:
-
-```bash
-python  main.py capture                  # Phase 1/2 - prompts for sudo itself; Ctrl+C to stop
-python  main.py graph                    # Phase 3 - builds the provenance graph
-python  main.py train --epochs 100       # Phase 4 - trains the GNN (mixes in the real graph)
-python  main.py detect                   # Phase 4 - rules + GNN, writes a detection report
-python  main.py seal                     # Phase 5 - Merkle-seals + signs the graph
-python  main.py evaluate                 # Phase 7 - survivability metrics
-python  main.py all                      # graph -> detect -> seal -> evaluate, one command
-```
-
-**Never run `capture` with an outer `sudo`.** `capture/collector.py` already invokes
-`sudo ./ebpf/loader` internally for just the tiny C loader that needs
-kernel privileges - the Python process itself, and everything it writes,
-stays as your normal user. `sudo python main.py capture` instead elevates
-the *whole* process, so every file/directory it touches (`graphs/`,
-`models/`, `keys/`, `evidence/`) gets created root-owned, and every
-later command fails with `PermissionError` until you `sudo chown -R
-$(id -u):$(id -g) graphs models keys evidence` to undo it.
-
-Each step's output:
-
-| Command    | Produces                                                                 |
-| ---------- | ------------------------------------------------------------------------ |
-| `capture`  | rows in `raw_events` / `cca_attestation` (or `evidence/*.jsonl` offline) |
-| `graph`    | `graphs/provenance_graph.gpickle`, `graphs/provenance.graphml`           |
-| `train`    | `models/gnn_detector.npz`, `models/gnn_detector.meta.json`               |
-| `detect`   | `evidence/detection_report.json` (rule violations, GNN scores, verdict)  |
-| `seal`     | `evidence/sealed_graph.json` (Merkle roots, hash chain, dual signatures) |
-| `evaluate` | `evaluation/report.json` (PIS / EPR / GRR / RA / FSI)                    |
-
-Visualize the graph separately (needs `capture`/`graph` to have run first):
-
-```bash
-python -m graph.visualize            # -> graphs/provenance_graph.png
-```
-
-Each phase also has its own direct CLI, useful when you only want that
-one piece:
-
-```bash
-python -m detection.model --epochs 120 --hidden 96 --synthetic 300
-python -m crypto.integrity --graph graphs/provenance_graph.gpickle --partition-size 64
-python -m evaluation.main --ratio 0.25 --seed 1
-```
-
-### Running without PostgreSQL or eBPF
-
-Every phase after capture works identically against a JSON-file backend,
-which makes the whole pipeline runnable on a laptop with no root, no
-Postgres, and no kernel module:
-
-```bash
-export QG_STORE=file        # default is "auto": try Postgres, fall back to file
-python main.py graph        # reads evidence/raw_events.jsonl instead of a table
-python main.py detect
-python main.py seal
-python main.py evaluate
-```
-
-`capture/collector.py` still needs eBPF and root to produce _real_
-`raw_events.jsonl`, but for detection/crypto/evaluation, training a model,
-or just exploring the code, `detection.synthetic.generate()` produces
-graphs with the identical schema, and that's exactly what
-`detection/model.py`'s training pipeline and the test suite already run on.
-
-### Tests
-
-```bash
-python -m tests.test_all
-```
-
-27 tests, no PostgreSQL, no eBPF, no root. Covers: Merkle tree/proof
-correctness at several leaf counts, key-store round trip and
-wrong-passphrase rejection, hybrid-signature verification with either
-algorithm broken independently, seal/verify detecting a deleted edge and
-an edited node attribute, the rule engine on clean and tampered graphs,
-CCA-attested gaps not being reported as tampering, feature-extraction
-determinism, an **analytic-vs-numerical gradient check on the GraphSAGE
-backward pass**, every tampering strategy producing consistent labels,
-FileStore round trips, and the Phase 3 execve-chain parent inference.
-
----
-
-## Configuration
-
-Everything that varies per machine or deployment is environment-overridable
-(`core/config.py`) - nothing is hard-coded to one host.
-
-| Variable                 | Default                                                                     | Meaning                                                           |
-| ------------------------ | --------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| `QG_DB_URL`              | `postgresql+psycopg2://quantumguard:StrongPassword123@localhost/provenance` | Phase 1/2/3 database                                              |
-| `QG_STORE`               | `auto`                                                                      | `db` \| `file` \| `auto` (try Postgres, fall back to `FileStore`) |
-| `QG_PARTITION_SIZE`      | `128`                                                                       | edges per Merkle partition                                        |
-| `QG_ALERT_MIN_NODES`     | `2`                                                                         | nodes the GNN alone must flag before calling a graph tampered     |
-| `QG_KEYSTORE_PASSPHRASE` | `quantumguard-dev`                                                          | decrypts `keys/quantumguard.keystore.json` - **change this**      |
-
----
-
-## Phase notes
-
-### Phase 1/2 - capture and completeness
-
-`ebpf/probes.c` hooks `sys_enter_execve` and filters to UID >= 1000 in the
-kernel (the same threshold `capture/collector.py` re-applies in
-userspace as defence in depth), so system/service accounts never reach
-the ring buffer. `capture/cca.py`'s `CCA` class tracks the expected vs.
-received sequence number per process and records any gap - that gap
-record is what lets `detection/detector.py`'s `sequence_gap` rule tell
-"an attacker deleted an event" apart from "the kernel legitimately
-dropped one under load".
-
-### Phase 3 - provenance graph (`graph/service.py`)
-
-Canonical process id is `P:{pid}:{sequence}` (one identity per process,
-not split across two nodes). Parent inference uses a real property of
-execve: at `sys_enter_execve` the kernel has already forked, so `pid` is
-the _new_ process but `comm` is still the name of the image being
-replaced - the parent. An event `(pid=4321, comm="bash",
-file="/usr/bin/ls")` means "something called bash exec'd ls", so it links
-to the most recent earlier event, same uid, whose executed binary's
-basename equals this event's `comm` (truncated to 15 chars -
-`TASK_COMM_LEN` is 16 bytes including the NUL). Events with no match
-attach to a per-uid session-root node instead of being left orphaned.
-Dropped events (out-of-order sequence/timestamp) are recorded in
-`service.dropped` rather than silently discarded.
-
-**Schema contract.** Every node/edge attribute name this module writes -
-`process_hash` (not `hash`), `synthetic_root` (not `synthetic`), `seq`
-and `ts` on every edge (not just `sequence`) - is read by
-`detection/features.py`, `detection/detector.py`, and
-`crypto/integrity.py`. A real captured graph and a
-`detection/synthetic.py`-generated graph must share this schema exactly,
-or tamper detection and integrity sealing silently degrade instead of
-failing loudly (this happened before it was fixed - see
-`graph/service.py`'s module docstring for the full story, and
-`tests/test_all.py`'s `GraphSchemaTest` for the regression tests that now guard it).
-
-### Phase 4 - poisoning detection (`detection/`)
-
-**The rule engine** (in `detection/detector.py`) encodes ten invariants a
-correctly captured graph is guaranteed to satisfy, so a violation is
-proof of tampering (or of a capture bug, equally worth surfacing) rather
-than a guess:
-
-| Rule                    | Severity | Catches                                            |
-| ----------------------- | -------- | -------------------------------------------------- |
-| `process_hash_mismatch` | critical | node attributes edited after capture               |
-| `dangling_edge`         | critical | edge pointing at a node missing from the graph     |
-| `duplicate_sequence`    | high     | injected events reusing a sequence number          |
-| `temporal_inversion`    | high     | later sequence carrying an earlier timestamp       |
-| `causal_inversion`      | high     | child timestamped before its parent                |
-| `attribute_conflict`    | high     | one pid under conflicting uids                     |
-| `sequence_gap`          | medium   | missing sequence numbers _with no CCA attestation_ |
-| `self_loop`             | medium   | process spawning or executing itself               |
-| `impossible_timestamp`  | medium   | negative timestamp                                 |
-| `orphan_process`        | low      | process whose causal origin can't be reconstructed |
-
-`sequence_gap` is where Phase 1's CCA and Phase 4's detector connect: a
-gap the CCA layer already attested as capture loss is not reported as
-tampering. `main.py detect` wires this automatically by loading
-`store.load_missing_sequences()` before running the rules.
-
-**The GNN** (`detection/model.py` + `features.py`) is a two-layer
-GraphSAGE with a mean aggregator, implemented in ~250 lines of NumPy with
-an explicit forward and backward pass (no PyTorch/CUDA dependency,
-trains hundreds of graphs in seconds on a CPU, and every line is
-explainable in a viva - the backward pass is checked against numerical
-gradients in `tests/test_all.py`'s `GraphSAGEGradientCheckTest`). Training data has no public
-source (nobody publishes labelled _poisoned provenance graphs_), so
-`detection/synthetic.py` generates it: synthetic execve-tree graphs mixed
-with overlapping windows of your own real capture, half left clean and
-half hit with one of four tampering strategies (deletion, reorder,
-forgery, timeshift) at a randomised sophistication level, so the model
-learns structural signals rather than one give-away attribute.
-
-**Fusion policy** (`detection/detector.py`): any critical/high rule
-violation means tampered at confidence 1.0, regardless of what the GNN
-says; the GNN can only ever _add_ detections. `main.py train` mixes your
-real captured graph in automatically if `graphs/provenance_graph.gpickle`
-exists - retrain after any real capture for a host-tuned model.
-
-### Phase 5 - integrity protection (`crypto/integrity.py`)
-
-```
-partition 0 --.
-partition 1 --+-- Merkle root over its relations
-partition 2 --'   + hash of the PREVIOUS record         (chain)
-                  + Ed25519 signature                   (classical)
-                  + ML-DSA-65 signature                  (post-quantum)
-```
-
-Partitioning is deterministic (edges sorted by `seq, ts, relation, src,
-dst`, chunked at `QG_PARTITION_SIZE`), so two parties building partitions
-from the same graph get byte-identical results. Merkle leaves cover both
-endpoint nodes' full sealed attributes as well as the edge, so editing a
-node's timestamp changes the leaf even though no edge was touched.
-Verification compares leaves as **sets**, not by position, so inserting
-one relation doesn't make the whole archive look rewritten - insertions
-are localised to the partition whose sequence range they fall in.
-Signing is strict AND across Ed25519 and ML-DSA-65 (`dilithium-py`, or
-`liboqs-python` if installed): an attacker has to break an elliptic-curve
-problem _and_ a lattice problem, and the signed message is domain-separated
-so a signature can never be replayed in a different context.
-
-The key store (`crypto.integrity.KeyStore`) is a software-HSM simulation:
-`passphrase --scrypt--> KEK --AES-256-GCM--> wrapped private keys`, never
-written to disk in plaintext. Key material does enter host memory, which
-a real HSM would prevent - state that limitation rather than letting
-someone find it.
-
-### Phase 7 - forensic survivability (`evaluation/main.py`)
-
-Simulates a poisoning attack as controlled random edge removal, runs a
-baseline recovery pass (drop isolated fragments), and reports five
-metrics: **PIS** (structural survival), **EPR** (event preservation),
-**GRR** (graph recovery rate), **RA** (recovery accuracy), and their
-weighted composite **FSI**.
 
 ---
 
 ## Known limitations
 
-State these before someone finds them.
+Stated here rather than left to be found.
 
-1. **Sequence resets on collector restart.** `capture/collector.py`'s
-   `SequenceManager` starts at 1 every run, so completeness is only
-   provable _within_ one session. `database/schema.sql` already
-   defines `capture_sessions` for per-run continuity; wiring a `run_id`
-   through `capture/collector.py` and `graph/service.py` is a Phase 1/3
-   change that hasn't been made.
-2. **CCA is not yet cryptographically signed.** Gaps are logically
-   detected and now feed the rule engine (see Phase 4 above), but the
-   attestation itself isn't sealed the way graph partitions are -
-   nothing yet stops an attacker who controls the database from deleting
-   an inconvenient `cca_attestation` row outright.
-3. **Software key store, not a real HSM.** Private keys enter host memory.
-4. **Detector trained on self-generated tampering.** There is no public
-   dataset of poisoned provenance graphs (DARPA TC/OpTC label attacks,
-   not audit-record tampering), so labels come from
-   `detection/synthetic.py`'s own `TamperGenerator`. Treat metrics in
-   `models/gnn_detector.meta.json` as a demonstration on this
-   distribution, not an external validation.
-5. **Capture is execve-only.** No file or network provenance, so the
-   graph is a process tree with file targets, not a full data-flow graph.
-6. **`impossible_timestamp` only catches negative timestamps**, not
-   far-future ones - event timestamps are boot-relative
-   (`bpf_ktime_get_ns()`), so comparing against wall-clock "now" would
-   flag every legitimate timestamp as "future" once reviewed after a
-   reboot. See the comment in `detection/detector.py::_temporal_rules`.
-7. **Phase 6 (risk-adaptive anchoring) is not built.** Hooks
-   (`risk_tier_hint`, `MerkleTree` groundwork for a second-order root,
-   `IntegrityService.inclusion_proof`) exist for it.
+**The detector is trained on self-generated tampering.** No public
+corpus of poisoned provenance graphs exists, so the training
+distribution is synthetic graphs plus windows of real capture, corrupted
+by four operators we implemented. The reported figures are
+in-distribution. They demonstrate the approach works against those four
+strategies; they are not evidence of performance against an adversary
+using a fifth we did not anticipate. Validation against DARPA OpTC is
+the next milestone. *This limitation applies only to the learned
+component — the cryptographic layer carries no distributional
+dependency.*
 
----
+**The key store is a software simulation, not an HSM.** Keys are
+encrypted at rest with scrypt and AES-GCM, but key material does enter
+host memory, which a hardware module would prevent. The interface is
+shaped like PKCS#11 so SoftHSM can be substituted.
 
-## Verification checklist
+**The anchor ledger is local.** `LocalLedger` provides append-only,
+hash-chained, dual-signed anchoring and verifies independently. It does
+*not* provide the property a distributed ledger provides — that no
+single party can rewrite history because no single party holds it. An
+attacker with root and the passphrase could discard the file and forge a
+replacement chain. `FabricLedger` implements the same interface and
+closes that gap, but requires a running Fabric network; it raises rather
+than returning fabricated transaction identifiers, because a simulated
+receipt would be worse than an honest failure.
 
-Everything below has been run and confirmed working, against both a live
-PostgreSQL capture and the offline `QG_STORE=file` path:
+**Capture is execve-only.** We observe which programs ran and what
+spawned them, not file reads or network connections. The graph is a
+process tree with file targets, not a full data-flow graph. Extending to
+`vfs_write` and `tcp_connect` probes is future work.
 
-- [x] `make -C ebpf` builds `loader` / `probes.o` / `probes.skel.h`
-- [x] `python main.py graph` → `graphs/provenance_graph.gpickle` with
-      `process_hash`, `synthetic_root`, and `seq`/`ts` on every edge
-- [x] `python main.py train` → `models/gnn_detector.npz` + `.meta.json`
-- [x] `python main.py detect` → rule engine + GNN fused verdict
-- [x] `python main.py seal` → Merkle-sealed, dual-signed evidence,
-      `Verified: True`
-- [x] `python main.py evaluate` → PIS/EPR/GRR/RA/FSI report
-- [x] `python -m tests.test_all` → 27/27 passing
+**Attack reconstruction is not implemented**, despite appearing in the
+project title. Reconstruction systems such as Kairos operate on a
+provenance graph; this work ensures the graph they consume is complete
+and untampered. We protect their input.
+
+**No ablations or baselines.** We have not isolated the contribution of
+individual feature families, compared against GCN/GAT/GIN, or tested
+other depths. A venue submission would expect these.
 
 ---
 
-## Resetting to a clean state
+## Novelty, assessed honestly
 
-Everything the pipeline writes is regenerable output (`graphs/`,
-`models/`, `evidence/`, `keys/`, and five Postgres tables) - safe to wipe
-between demo runs, or before a fresh capture session. If you want to keep
-a copy of a run's results first (e.g. to compare before/after a demo),
-copy them out before deleting:
+**Genuinely novel.** Treating provenance-graph poisoning as a
+first-class detectable attack. Every graph-based forensic system in our
+review — Kairos, MGDA, and the rest — begins from an assumption of input
+fidelity. None detects deletion, reordering or forgery of the record
+itself.
 
-```bash
-cp evidence/detection_report.json evidence/sealed_graph.json \
-   evaluation/report.json models/gnn_detector.meta.json  ~/qg-demo-backup/
-```
+**Novel as a combination, not individually.** Hybrid Ed25519 + ML-DSA
+signing is *not* novel on its own; it has been proposed and applied
+elsewhere. Merkle batching over audit logs is decades old. What is
+unbuilt is the pipeline: completeness attestation feeding poisoning
+detection feeding cryptographically sealed, chained, dual-signed,
+risk-anchored evidence, with survivability quantified at the end.
 
-### Quick reset (keep the DB user/schema, wipe the data)
+**Two smaller contributions worth naming.** The tamper alert is itself
+sealed and anchored — an attacker can attempt to destroy the record
+proving they were caught, but not quietly. And detection runs *before*
+certification, so tampering is caught rather than inherited into the
+signed archive.
 
-```bash
-# empty every table but keep the schema and reset id/serial counters
-sudo -u postgres psql -d provenance -c \
-  "TRUNCATE TABLE raw_events, cca_attestation, graph_partitions, \
-   detection_reports, capture_sessions RESTART IDENTITY;"
+---
 
-# delete every generated file - main.py recreates these dirs on next run
-rm -rf graphs models evidence keys
+## References
 
-# optional: also clear bytecode caches
-find . -name "__pycache__" -exec rm -rf {} +
-```
+[1] R. Sekar, H. Kimm, R. Aich. *eAudit: A Fast, Scalable and Deployable
+Audit Data Collection System.* IEEE S&P 2024, pp. 3571–3589.
 
-After this, `python main.py graph` (or `capture` first, for a live
-demo) starts completely fresh - no old nodes, no stale detection report,
-no keystore left over from the last run.
+[2] Y. Hu, K. Hooshmand, H. Kalidhindi, S. J. Yang, R. A. Popa.
+*Merkle²: A Low-Latency Transparency Log System.* IEEE S&P 2021,
+pp. 285–303.
 
-### Full reset (drop the database entirely)
+[3] Y. Baseri, A. Hafid, Y. Shahsavari, D. Makrakis, H. Khodaiemehr.
+*Blockchain Security Risk Assessment in Quantum Era, Migration
+Strategies and Proactive Defense.* IEEE COMST, 2025.
 
-Only if you want to remove the `provenance` database and `quantumguard`
-role too, e.g. handing the machine to someone else:
+[4] M. Cui, Z. Jiang, S. Li, C. Ma, K. Zhang, P. Yang, H. Feng. *MGDA: A
+Provenance Graph-Based Framework for Threat Detection and Attack
+Scenario Reconstruction.* Computer Networks, vol. 274, 2025.
 
-```bash
-sudo -u postgres dropdb provenance
-sudo -u postgres psql -c "DROP ROLE IF EXISTS quantumguard;"
-rm -rf graphs models evidence keys venv
-```
+[5] M. Zipperle, F. Gottwalt, E. Chang, T. Dillon. *Provenance-based
+Intrusion Detection Systems: A Survey.* ACM Computing Surveys, vol. 55,
+no. 7, 2022.
 
-Then repeat [Setup](#setup) from step 2 onward to rebuild.
+[6] Z. Cheng, Q. Lv, J. Liang, Y. Wang, D. Sun, T. Pasquier, X. Han.
+*Kairos: Practical Intrusion Detection and Investigation using
+Whole-system Provenance.* IEEE S&P 2024, pp. 3533–3551.
 
-### Offline (`QG_STORE=file`) reset
+[7] NIST. *Module-Lattice-Based Digital Signature Standard.* FIPS 204,
+2024.
 
-There's no database involved, so the quick reset is just:
-
-```bash
-rm -rf graphs models evidence keys
-```
+[8] W. L. Hamilton, R. Ying, J. Leskovec. *Inductive Representation
+Learning on Large Graphs.* NeurIPS 2017.

@@ -106,13 +106,15 @@ CREATE INDEX IF NOT EXISTS idx_reports_tampered ON detection_reports (tampered);
 
 
 -- ---------------------------------------------------------------
--- Optional: capture-session continuity (see README's Known limitations)
+-- Phase 1 - capture-session continuity
 -- ---------------------------------------------------------------
--- The collector resets its sequence counter to 1 on restart, so a
--- session identifier is needed before completeness can be attested
--- across runs. The table is created here; wiring a run_id through
--- capture/collector.py and graph/service.py is a separate change and is
--- deliberately NOT done by this file.
+-- A sequence counter that resets to 1 on every collector restart can
+-- only attest completeness within one session, and collides with the
+-- primary key of events already captured. capture/cca.py's
+-- SessionManager reads the highest stored sequence from here and
+-- resumes from it, recording the downtime between sessions as an
+-- explicit SESSION_GAP attestation so it reads later as documented
+-- downtime rather than as deletion.
 
 CREATE TABLE IF NOT EXISTS capture_sessions (
     run_id          TEXT        PRIMARY KEY,
@@ -121,3 +123,65 @@ CREATE TABLE IF NOT EXISTS capture_sessions (
     ended_at        TIMESTAMP,
     last_sequence   BIGINT
 );
+
+CREATE INDEX IF NOT EXISTS idx_sessions_started
+    ON capture_sessions (started_at);
+
+
+-- ---------------------------------------------------------------
+-- Phase 6 - risk-adaptive anchoring
+-- ---------------------------------------------------------------
+-- One row per partition anchored externally. The ledger itself lives
+-- outside the database (ledger/anchor_ledger.json, or a Hyperledger
+-- Fabric channel): an anchor stored in the same database as the
+-- evidence it protects is destroyed by the same attacker. These rows
+-- are the local index INTO that ledger, not the anchor itself.
+
+CREATE TABLE IF NOT EXISTS anchor_receipts (
+    id                  BIGSERIAL   PRIMARY KEY,
+    run_id              TEXT        NOT NULL,
+    partition_index     INT         NOT NULL,
+
+    risk_score          REAL        NOT NULL,
+    risk_tier           TEXT        NOT NULL,
+    escalated_by        TEXT,
+
+    merkle_root         TEXT        NOT NULL,
+    ledger              TEXT,
+    block_number        BIGINT,
+    transaction_id      TEXT,
+    batch_root          TEXT,
+    inclusion_path      JSONB,
+
+    created_at          TEXT        NOT NULL,
+
+    UNIQUE (run_id, partition_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_anchors_run  ON anchor_receipts (run_id);
+CREATE INDEX IF NOT EXISTS idx_anchors_tier ON anchor_receipts (risk_tier);
+
+
+-- ---------------------------------------------------------------
+-- Phase 7 - forensic survivability measurements
+-- ---------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS survivability_reports (
+    id                  BIGSERIAL   PRIMARY KEY,
+    run_id              TEXT,
+    created_at          TEXT        NOT NULL,
+
+    poison_mode         TEXT,
+    poison_ratio        REAL,
+
+    pis                 REAL,
+    epr                 REAL,
+    grr                 REAL,
+    ra                  REAL,
+    fsi                 REAL,
+
+    detail              JSONB
+);
+
+CREATE INDEX IF NOT EXISTS idx_survivability_run
+    ON survivability_reports (run_id);

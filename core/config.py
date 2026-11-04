@@ -91,6 +91,44 @@ KEYSTORE_PASSPHRASE = os.getenv(
 ED25519 = "Ed25519"
 MLDSA = "ML-DSA-65"
 
+# ==========================================================
+# ANCHORING  (anchoring/)  - Phase 6
+# ==========================================================
+
+# Where the external anchor lives. "local" is the append-only, chained,
+# dual-signed ledger in anchoring/ledger.py; "fabric" selects the
+# Hyperledger Fabric adapter, which needs a running network and raises
+# NotImplementedError without one. See anchoring/ledger.py for exactly
+# what the local ledger does and does not guarantee.
+LEDGER_BACKEND = os.getenv("QG_LEDGER", "local")
+
+# The ledger file is deliberately NOT under EVIDENCE_DIR: an anchor that
+# lives beside the evidence it protects is destroyed by the same `rm`.
+LEDGER_DIR = "ledger"
+LEDGER_PATH = f"{LEDGER_DIR}/anchor_ledger.json"
+
+ANCHOR_REPORT = f"{EVIDENCE_DIR}/anchoring_report.json"
+
+# Tier-2 partitions accumulate until this many are pending, then one
+# second-order Merkle tree is built over their roots and a single
+# transaction anchors the batch. Larger batches cost fewer transactions
+# and delay the anchor for the earliest member; this default trades a
+# short delay for an 8x reduction in ledger writes.
+ANCHOR_BATCH_SIZE = int(os.getenv("QG_ANCHOR_BATCH_SIZE", "8"))
+
+# ==========================================================
+# EVALUATION  (evaluation/)  - Phase 7
+# ==========================================================
+
+EVALUATION_DIR = "evaluation"
+EVALUATION_REPORT = f"{EVALUATION_DIR}/report.json"
+
+# Weights of the five survivability measures inside the composite FSI.
+# PIS and GRR carry the most weight because they answer the two
+# questions an investigator asks first: how much evidence is left, and
+# can the causal chain still be walked.
+FSI_WEIGHTS = {"PIS": 0.30, "EPR": 0.20, "GRR": 0.25, "RA": 0.25}
+
 # No blanket init_dirs() here on purpose: main.py used to call one before
 # every subcommand, which meant `sudo python main.py capture` on a fresh
 # checkout created graphs/, models/ and keys/ as root too - even though

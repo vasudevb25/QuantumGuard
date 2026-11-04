@@ -64,6 +64,23 @@ class FileStore:
         if not data.get("complete", False):
             self._append("cca_attestation.jsonl", data)
 
+    def save_session(self, session: dict[str, Any]) -> None:
+        """Record or update one capture session.
+
+        Sessions are what make completeness provable across collector
+        restarts: the next run reads the highest sequence already stored
+        and resumes from it instead of colliding at 1.
+        """
+        path = self.directory / "capture_sessions.json"
+        existing = {item["run_id"]: item for item in self._read(path.name)}
+        existing[session["run_id"]] = {**existing.get(session["run_id"], {}),
+                                       **session}
+        path.write_text(json.dumps(list(existing.values()), indent=2,
+                                   default=str) + "\n", encoding="utf-8")
+
+    def load_sessions(self) -> list[dict[str, Any]]:
+        return self._read("capture_sessions.json")
+
     def load_missing_sequences(self) -> set[int]:
         """Union of every sequence number CCA ever attested as lost. Feeds
         detection.detector.RuleEngine so a capture-side gap the CCA layer
@@ -95,6 +112,32 @@ class FileStore:
         reports = self._read("detection_reports.jsonl")
         return reports if run_id is None else [report for report in reports if report.get("run_id") == run_id]
 
+    # --- Phase 6: the local index INTO the ledger, not the anchor itself
+    def save_anchor_receipts(self, result: dict[str, Any]) -> None:
+        path = self.directory / "anchor_receipts.json"
+        existing = {(item["run_id"], item["partition_index"]): item
+                    for item in self._read(path.name)}
+        for row in anchor_receipt_rows(result):
+            existing[(row["run_id"], row["partition_index"])] = row
+        path.write_text(json.dumps(list(existing.values()), indent=2,
+                                   default=str) + "\n", encoding="utf-8")
+
+    def load_anchor_receipts(self, run_id: str | None = None) -> list[dict[str, Any]]:
+        rows = self._read("anchor_receipts.json")
+        if run_id is not None:
+            rows = [row for row in rows if row.get("run_id") == run_id]
+        return sorted(rows, key=lambda row: row["partition_index"])
+
+    # --- Phase 7
+    def save_survivability_report(self, metrics: dict[str, Any],
+                                  run_id: str | None = None) -> None:
+        self._append("survivability_reports.jsonl",
+                     survivability_row(metrics, run_id))
+
+    def load_survivability_reports(self, run_id: str | None = None) -> list[dict[str, Any]]:
+        rows = self._read("survivability_reports.jsonl")
+        return rows if run_id is None else [row for row in rows if row.get("run_id") == run_id]
+
 
 class PostgreSQLStore:
     """PostgreSQL implementation backed by ``database/schema*.sql``."""
@@ -125,11 +168,16 @@ class PostgreSQLStore:
         data = _as_dict(attestation)
         if data.get("complete", False):
             return
-        data["missing"] = json.dumps(data.get("missing", []))
+        # Attestation carries run_id/reason/recorded_at as well; bind only
+        # the columns the table declares so a richer dataclass never
+        # breaks the insert.
+        params = {"expected": data.get("expected"),
+                  "received": data.get("received"),
+                  "missing": json.dumps(data.get("missing", []))}
         with self.engine.begin() as connection:
             connection.execute(self._text("""INSERT INTO cca_attestation
                 (expected, received, complete, missing_sequences)
-                VALUES (:expected, :received, false, CAST(:missing AS JSONB))"""), data)
+                VALUES (:expected, :received, false, CAST(:missing AS JSONB))"""), params)
 
     def load_missing_sequences(self) -> set[int]:
         """Union of every sequence number CCA ever attested as lost. Feeds
@@ -144,6 +192,23 @@ class PostgreSQLStore:
             data = json.loads(value) if isinstance(value, str) else (value or [])
             missing.update(data)
         return missing
+
+    def save_session(self, session: dict[str, Any]) -> None:
+        with self.engine.begin() as connection:
+            connection.execute(self._text("""INSERT INTO capture_sessions
+                (run_id, host, started_at, ended_at, last_sequence)
+                VALUES (:run_id, :host, CAST(:started_at AS TIMESTAMP),
+                        CAST(:ended_at AS TIMESTAMP), :last_sequence)
+                ON CONFLICT (run_id) DO UPDATE SET
+                    ended_at = EXCLUDED.ended_at,
+                    last_sequence = EXCLUDED.last_sequence"""), session)
+
+    def load_sessions(self) -> list[dict[str, Any]]:
+        with self.engine.begin() as connection:
+            rows = connection.execute(self._text(
+                "SELECT * FROM capture_sessions ORDER BY started_at"
+            )).mappings().all()
+        return [dict(row) for row in rows]
 
     def save_partitions(self, records: list[dict[str, Any]]) -> None:
         sql = self._text("""INSERT INTO graph_partitions
@@ -174,6 +239,11 @@ class PostgreSQLStore:
         with self.engine.begin() as connection:
             records = [dict(row) for row in connection.execute(self._text(statement), parameters).mappings()]
         for record in records:
+            # `id` is the table's surrogate key, not part of the sealed
+            # record. Returning it would add a field that was never
+            # hashed, so crypto.integrity.record_hash() would fail on
+            # every partition read back from PostgreSQL.
+            record.pop("id", None)
             if isinstance(record.get("leaf_hashes"), str):
                 record["leaf_hashes"] = json.loads(record["leaf_hashes"])
         return records
@@ -201,6 +271,119 @@ class PostgreSQLStore:
             if isinstance(record.get("detail"), str):
                 record["detail"] = json.loads(record["detail"])
         return records
+
+    def save_anchor_receipts(self, result: dict[str, Any]) -> None:
+        sql = self._text("""INSERT INTO anchor_receipts
+            (run_id, partition_index, risk_score, risk_tier, escalated_by,
+             merkle_root, ledger, block_number, transaction_id, batch_root,
+             inclusion_path, created_at)
+            VALUES (:run_id, :partition_index, :risk_score, :risk_tier,
+             :escalated_by, :merkle_root, :ledger, :block_number,
+             :transaction_id, :batch_root, CAST(:inclusion_path AS JSONB),
+             :created_at)
+            ON CONFLICT (run_id, partition_index) DO UPDATE SET
+             risk_score=EXCLUDED.risk_score, risk_tier=EXCLUDED.risk_tier,
+             escalated_by=EXCLUDED.escalated_by,
+             merkle_root=EXCLUDED.merkle_root, ledger=EXCLUDED.ledger,
+             block_number=EXCLUDED.block_number,
+             transaction_id=EXCLUDED.transaction_id,
+             batch_root=EXCLUDED.batch_root,
+             inclusion_path=EXCLUDED.inclusion_path,
+             created_at=EXCLUDED.created_at""")
+        with self.engine.begin() as connection:
+            for row in anchor_receipt_rows(result):
+                data = dict(row)
+                data["inclusion_path"] = (None if data["inclusion_path"] is None
+                                          else json.dumps(data["inclusion_path"]))
+                connection.execute(sql, data)
+
+    def load_anchor_receipts(self, run_id: str | None = None) -> list[dict[str, Any]]:
+        statement, parameters = "SELECT * FROM anchor_receipts", {}
+        if run_id is not None:
+            statement += " WHERE run_id = :run_id"
+            parameters["run_id"] = run_id
+        statement += " ORDER BY partition_index"
+        with self.engine.begin() as connection:
+            return [dict(row) for row in connection.execute(
+                self._text(statement), parameters).mappings()]
+
+    def save_survivability_report(self, metrics: dict[str, Any],
+                                  run_id: str | None = None) -> None:
+        data = survivability_row(metrics, run_id)
+        data["detail"] = json.dumps(data["detail"], default=str)
+        with self.engine.begin() as connection:
+            connection.execute(self._text("""INSERT INTO survivability_reports
+                (run_id, created_at, poison_mode, poison_ratio,
+                 pis, epr, grr, ra, fsi, detail)
+                VALUES (:run_id, :created_at, :poison_mode, :poison_ratio,
+                 :pis, :epr, :grr, :ra, :fsi, CAST(:detail AS JSONB))"""), data)
+
+    def load_survivability_reports(self, run_id: str | None = None) -> list[dict[str, Any]]:
+        statement, parameters = "SELECT * FROM survivability_reports", {}
+        if run_id is not None:
+            statement += " WHERE run_id = :run_id"
+            parameters["run_id"] = run_id
+        with self.engine.begin() as connection:
+            return [dict(row) for row in connection.execute(
+                self._text(statement), parameters).mappings()]
+
+
+# ----------------------------------------------------------------------
+# Row shapes shared by both backends, so the file and database stores
+# can never disagree about what a Phase 6/7 record contains.
+# ----------------------------------------------------------------------
+
+
+def anchor_receipt_rows(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """One row per anchored partition, mirroring `anchor_receipts`.
+
+    Tier-3 partitions get a row too (ledger/receipt fields empty): the
+    index then records that the partition was scored and deliberately
+    left local-only, rather than leaving it indistinguishable from a
+    partition that was never processed.
+    """
+    scores = {entry["partition_index"]: entry for entry in result.get("scores", [])}
+    rows = []
+    for anchor in result.get("anchors", []):
+        index = anchor["partition_index"]
+        receipt = anchor.get("receipt") or {}
+        inclusion = anchor.get("inclusion") or {}
+        rows.append({
+            "run_id": result.get("run_id"),
+            "partition_index": index,
+            "risk_score": anchor["risk_score"],
+            "risk_tier": anchor["tier"],
+            "escalated_by": scores.get(index, {}).get("escalated_by"),
+            "merkle_root": anchor["merkle_root"],
+            "ledger": receipt.get("ledger"),
+            "block_number": receipt.get("block_number"),
+            "transaction_id": receipt.get("transaction_id"),
+            "batch_root": inclusion.get("batch_root"),
+            "inclusion_path": inclusion.get("path"),
+            "created_at": result.get("created_at"),
+        })
+    return rows
+
+
+def survivability_row(metrics: dict[str, Any],
+                      run_id: str | None = None) -> dict[str, Any]:
+    """One `survivability_reports` row from an evaluation.main result."""
+    import datetime as dt
+    conditions = metrics.get("conditions", {})
+    return {
+        "run_id": run_id,
+        "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "poison_mode": conditions.get("poison_mode"),
+        "poison_ratio": conditions.get("poison_ratio"),
+        "pis": metrics.get("PIS"),
+        "epr": metrics.get("EPR"),
+        "grr": metrics.get("GRR"),
+        "ra": metrics.get("RA"),
+        "fsi": metrics.get("FSI"),
+        "detail": {"conditions": conditions,
+                   "evidence": metrics.get("evidence", {}),
+                   "degraded": metrics.get("degraded", [])},
+    }
 
 
 _store = None

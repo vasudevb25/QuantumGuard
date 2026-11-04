@@ -1,29 +1,3 @@
-"""
-Phase 4 - Poisoning Detection (inference side).
-
-Two detectors run over the same graph and their outputs are combined:
-
-    RuleEngine   deterministic invariants. High precision, zero training.
-                 A violation is proof, not a guess.
-    GraphSAGE    learned structural/temporal anomaly score per node
-                 (detection/model.py). Catches tampering the rules were
-                 not written for.
-
-Fusion policy
--------------
-    any critical/high rule violation      -> tampered (confidence 1.0)
-    >= GRAPH_ALERT_MIN_NODES nodes above
-      the learned threshold               -> tampered
-    otherwise                             -> clean
-
-The rule engine deliberately dominates: it cannot produce a false
-positive on a correctly captured graph, so when it fires we do not let a
-low GNN score talk us out of it. The GNN only ever ADDS detections.
-
-The report this produces is itself evidence. Phase 5 (crypto/integrity.py)
-seals it, which is what stops an attacker from deleting the alert that
-says they were caught.
-"""
 
 from __future__ import annotations
 
@@ -37,35 +11,6 @@ from core import config
 from detection import features
 from detection.model import GraphSAGE
 
-# ===================================================================
-# Rule engine
-# ===================================================================
-#
-# The GNN generalises but can be wrong. These rules cannot: each one
-# encodes an invariant that a correctly captured provenance graph is
-# guaranteed to satisfy, so a violation is hard evidence of tampering (or
-# of a capture bug, which is equally worth surfacing).
-#
-# Rules
-# -----
-# R1  sequence_gap           gap in capture sequence not explained by a CCA
-#                             attestation record
-# R2  duplicate_sequence     two relations claim the same sequence number
-# R3  temporal_inversion     a later sequence number carries an earlier
-#                             timestamp
-# R4  causal_inversion       a child process is timestamped before the
-#                             parent that spawned it
-# R5  process_hash_mismatch  process_hash != sha256("pid:timestamp:comm")
-# R6  orphan_process         a non-root process with no parent edge
-# R7  dangling_edge          edge endpoint missing from the node set
-# R8  self_loop              a process that spawned or executed itself
-# R9  attribute_conflict     the same process node carries inconsistent
-#                             uid/comm across its relations
-# R10 impossible_timestamp   negative timestamp (see _temporal_rules for
-#                             why far-future is deliberately not checked)
-#
-# Every violation names the node or edge, so the report is actionable and
-# can be handed to the integrity layer as a "tamper alert" artefact.
 
 SEVERITY = {
     "sequence_gap": "medium",
