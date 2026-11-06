@@ -236,13 +236,17 @@ class AnchoringService:
                           reason="tier 3: local chain only, no external anchor")
             return result
 
-        receipt = self.ledger.lookup(anchor["merkle_root"])
-        if receipt is None:
+        inclusion = anchor.get("inclusion")
+        # A batched partition must be traced to a root the LEDGER holds. Taken
+        # from the anchor alone, the batch root could be anything the attacker
+        # built a valid path to.
+        wanted = inclusion.get("batch_root") if inclusion else anchor["merkle_root"]
+        receipt = self.ledger.lookup(wanted) if wanted else None
+        if receipt is None or (inclusion and receipt["anchored"].get("merkle_root") != wanted):
             result["reason"] = "no ledger receipt found for this root"
             return result
         result["ledger_ok"] = True
 
-        inclusion = anchor.get("inclusion")
         if not inclusion:
             # anchored directly by its own root; the ledger lookup above
             # is the whole proof
@@ -266,10 +270,56 @@ class AnchoringService:
             result["reason"] = "inclusion proof does not reach the batch root"
         return result
 
-    def verify_run(self, anchoring_report: dict[str, Any]) -> dict[str, Any]:
+    def alerted_partitions(self, records, graph=None, report=None,
+                           partitions=None) -> set[int]:
+        """Partitions holding the evidence behind a TAMPERED verdict.
+
+        Falls back to the highest-scoring partition when the alert cannot be
+        localised, so a tampered verdict always escalates something without
+        escalating everything.
+        """
+        if not report or not report.get("tampered"):
+            return set()
+        scores = self.scorer.score_all(records, graph, report, partitions)
+        hits = {entry["partition_index"] for entry in scores
+                if entry["evidence"]["blocking_violations"]
+                or entry["evidence"]["flagged_nodes"]
+                or entry["evidence"]["unattested_gaps"]}
+        return hits or {max(scores, key=lambda e: e["risk_score"])["partition_index"]}
+
+    def cross_check(self, records: list[dict[str, Any]]) -> list[str]:
+        """Compare the sealed evidence with what the ledger recorded for it.
+
+        This is the check anchoring exists for. Evidence rewritten and
+        re-signed by someone holding the keys passes every local test, but
+        its roots no longer match the ones anchored earlier.
+        """
+        if not records:
+            return []
+        run_id = records[0].get("run_id")
+        sealed = {record["partition_index"]: record["merkle_root"] for record in records}
+        problems = []
+        for receipt in self.ledger.receipts():
+            payload = receipt["anchored"]
+            if payload.get("run_id") != run_id:
+                continue
+            if payload.get("kind") == "partition":
+                pairs = [(payload["partition_index"], payload["merkle_root"])]
+            else:
+                pairs = zip(payload.get("partition_indices", []),
+                            payload.get("member_roots", []))
+            for index, root in pairs:
+                if sealed.get(index) != root:
+                    problems.append(
+                        f"partition {index}: sealed root does not match the root "
+                        f"anchored in block {receipt['block_number']}")
+        return problems
+
+    def verify_run(self, anchoring_report: dict[str, Any],
+                   verifier=None) -> dict[str, Any]:
         """Verify the ledger itself, then every anchor it issued."""
 
-        ledger = self.ledger.verify()
+        ledger = self.ledger.verify(verifier)
         checks = [self.verify_anchor(anchor)
                   for anchor in anchoring_report.get("anchors", [])]
 

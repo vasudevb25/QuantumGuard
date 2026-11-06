@@ -17,7 +17,7 @@ to be checked against the code, not taken on trust.
 | **6. Risk-adaptive anchoring** | risk scoring, 3-tier anchoring (local / batched / Fabric) | ✅ **Done** — six-signal risk model, calibrated thresholds, second-order batching, append-only signed ledger. *Fabric adapter is an interface, not a simulation* |
 | **7. Survivability evaluation** | PIS, EPR, GRR, RA, FSI | ✅ **Done** — five measures, five damage models, sealing-benefit experiment |
 
-**All seven phases implemented.** 76 tests pass with no PostgreSQL, no
+**All seven phases implemented.** 124 tests pass with no PostgreSQL, no
 eBPF and no root.
 
 ---
@@ -26,9 +26,9 @@ eBPF and no root.
 
 | # | Objective | Status |
 |---|---|---|
-| O1 | Capture with a monotonic sequence so event loss is **provable** | ✅ **Done** — sequence continuity holds across restarts; completeness certificates are dual-signed and third-party verifiable |
+| O1 | Capture with a monotonic sequence so event loss is **provable** | ✅ **Done** — captures root activity inside login sessions; sequence continuity holds across restarts; completeness certificates are dual-signed and third-party verifiable |
 | O2 | Causally correct graph with real process-tree reconstruction | ✅ **Done** |
-| O3 | Detect poisoning: deletion, reorder, forgery, timeshift | ✅ **Done** — 100% detection across all four at both sophistication levels |
+| O3 | Detect poisoning: deletion, reorder, forgery, timeshift | ⚠️ **Done for the trained attacks** — 100% on those; mostly low from rules and GNN on self-consistent attacks they have not seen, which only the seal catches. See the tamper scorecard |
 | O4 | Seal with Merkle-rooted, hash-chained partitions under hybrid signatures | ✅ **Done** — 100% tamper detection, no training data required |
 | O5 | Risk-adaptive anchoring and quantified survivability | ✅ **Done** — with the ledger caveat below |
 
@@ -96,37 +96,50 @@ as damage rises.
 
 Regenerate with `python -m tests.benchmark`.
 
-**Detection** — 100% across all four strategies at both sophistication
-levels. The decisive row:
+**Detection** — on the four trained strategies, 100% at both sophistication
+levels. On seven self-consistent attacks the model never trained on, the
+reported verdict catches six at 0-33% and the seal catches all of them at 100%
+(`python main.py tamper test`). The GNN's measured contribution is partial
+deletion: 100% against the rules' 63-73%.
 
-| Attack | Detected | By rules | By GNN |
-|---|---|---|---|
-| reorder, sophisticated | 15/15 | **0/15** | **15/15** |
-
-A sophisticated reorder swaps sequence numbers and timestamps together,
-satisfying every deterministic invariant. Only the learned component
-sees it. That single row is the argument for not shipping rules alone.
+An earlier claim here, that only the GNN sees a sophisticated reorder, did not
+hold up: comparing edge and node timestamps catches it in every run with no
+false alarms, and is now rule `edge_node_mismatch`.
 
 **Integrity** — 100% tamper detection, all strategies, no training data
 and no distributional assumption.
 
-**Risk separation** — clean captures max 0.075; tampered captures min
-0.228. At the configured threshold of 0.20: 0/15 clean runs anchor
+**Risk separation** — clean captures max 0.018; tampered captures min
+0.268, using trained attacks. At the configured threshold of 0.20: 0/15 clean runs anchor
 anything, 15/15 tampered runs are anchored.
 
 **Anchoring cost** — 15 clean runs: 300 partitions, **0 ledger
-transactions**. 15 tampered runs: 189 partitions anchored in **16
-transactions** (11.8× batching compression).
+transactions**. 15 tampered runs: 250 partitions anchored in **16
+transactions** (15.6× batching compression).
 
 **Sealing benefit** — against a mixed delete-and-fabricate attack, 72
 relations were fabricated. Recovery Accuracy **80.80% → 100.00%**
-(+19.20 points) with sealed evidence available.
+(+19.20 points) with sealed evidence available. The sealed 100% is true by
+construction; the measurement is the unsealed 80.80%.
 
 ---
 
 ## Known limitations
 
 Stated here, not left to be found.
+
+0. **Detection does not generalise.** See the tamper scorecard: an attacker who
+   keeps the graph self-consistent passes the rules and the GNN. The seal is
+   what catches them. GNN thresholds also vary between training runs, and one
+   real capture is too little to measure false alarms on real data with
+   confidence: holding out half of it gave 0/3 and 3/3 false alarms on small
+   windows across two seeds. False alarms also rise on captures larger than
+   the 300-event training limit: a clean 463-event capture was flagged. Scoring
+   in chunks was tried and made it worse (73-100% false alarms), because cutting
+   the graph creates orphans. GNN-only results are therefore reported as
+   SUSPICIOUS, with a warning when the capture is that large. False alarms also
+   occur below that size: a clean 177-event capture was flagged even after
+   retraining on it, so a GNN-only result on real data is not evidence by itself.
 
 1. **The detector is trained on self-generated tampering.** No public
    corpus of poisoned provenance graphs exists. The figures are
@@ -148,6 +161,24 @@ Stated here, not left to be found.
 4. **Capture is execve-only.** Program execution is observed; file reads
    and network connections are not. The graph is a process tree with
    file targets, not a data-flow graph.
+
+3a. **Commands typed in a terminal are mostly missing from captures, cause
+    unknown.** Captures hold events from VS Code, its scripts and `claude`, but
+    not `python main.py ...` commands run in a terminal during the capture,
+    including with the original probe. A certificate saying "0 missing" only
+    covers events that reached the collector. Until this is explained, do not
+    claim every exec is captured.
+
+4a. **An exploited root service can go unseen.** Capture keeps uid >= 1000 and
+    anything inside a login session, so `sudo`, `su` and root logins are recorded.
+    A service has no login session, so root gained by exploiting one is filtered
+    out with all other service activity.
+
+4b. **Parents are inferred from binary names**, not read from the kernel.
+
+4c. **Login-uid capture is built but not yet load-tested.** It compiles and its
+    field resolves against the running kernel's type data, but loading a probe
+    needs root. Loss counting and wall-clock capture have run on a real kernel.
 
 5. **Attack reconstruction is not implemented**, despite the project
    title. Systems like Kairos do reconstruction; this work protects the

@@ -74,6 +74,10 @@ CREATE TABLE IF NOT EXISTS graph_partitions (
     UNIQUE (run_id, partition_index)
 );
 
+-- Seal format 2. NULL on partitions sealed before these existed.
+ALTER TABLE graph_partitions ADD COLUMN IF NOT EXISTS seal_format INT;
+ALTER TABLE graph_partitions ADD COLUMN IF NOT EXISTS total_partitions INT;
+
 CREATE INDEX IF NOT EXISTS idx_partitions_run  ON graph_partitions (run_id);
 CREATE INDEX IF NOT EXISTS idx_partitions_seq  ON graph_partitions (seq_start, seq_end);
 CREATE INDEX IF NOT EXISTS idx_partitions_tier ON graph_partitions (risk_tier_hint);

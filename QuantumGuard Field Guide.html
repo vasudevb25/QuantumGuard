@@ -1,0 +1,457 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>QuantumGuard Field Guide</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Condensed:wght@500;700&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&display=swap">
+<style>
+/* Layout: an evidence manual. A fixed contents rail on wide screens, one reading column, and terminal output shown as exhibits. */
+:root {
+  --bg: #f2f5f7; --surface: #ffffff; --sunk: #e6ecf0; --fg: #16232c; --muted: #51626e; --line: #cdd7de;
+  --accent: #0a6470; --accent-soft: #d6eaec;
+  --good: #17693f; --good-bg: #d5eddf; --mid: #7a5a00; --mid-bg: #f6e8bd; --bad: #a32c1d; --bad-bg: #f8d9d3;
+  --term-bg: #17242d; --term-fg: #d7e3ea; --term-dim: #8ea3b0;
+  --display: "IBM Plex Sans Condensed", "Arial Narrow", Arial, sans-serif;
+  --body: "IBM Plex Sans", "Segoe UI", Arial, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #10191f; --surface: #17232b; --sunk: #1e2c35; --fg: #e3ebf0; --muted: #9db0bc; --line: #2f414d;
+  --accent: #5cc2cf; --accent-soft: #15353c;
+  --good: #7fdca6; --good-bg: #173a29; --mid: #eccb72; --mid-bg: #41350f; --bad: #ff9d8e; --bad-bg: #4b2019;
+  --term-bg: #0b1216; --term-fg: #d7e3ea; --term-dim: #84989f; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #10191f; --surface: #17232b; --sunk: #1e2c35; --fg: #e3ebf0; --muted: #9db0bc; --line: #2f414d;
+  --accent: #5cc2cf; --accent-soft: #15353c;
+  --good: #7fdca6; --good-bg: #173a29; --mid: #eccb72; --mid-bg: #41350f; --bad: #ff9d8e; --bad-bg: #4b2019;
+  --term-bg: #0b1216; --term-fg: #d7e3ea; --term-dim: #84989f; color-scheme: dark; }
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body { background: var(--bg); color: var(--fg); font: 16px/1.62 var(--body); }
+.shell { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 56px; max-width: 1120px; margin: 0 auto;
+  padding-block: 40px 90px; padding-left: max(24px, env(safe-area-inset-left, 0px)); padding-right: max(24px, env(safe-area-inset-right, 0px)); }
+nav { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 28px); align-self: start; font-size: 14px; }
+nav b { display: block; font: 700 13px var(--display); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin-block: 18px 6px; }
+nav a { display: block; color: var(--fg); text-decoration: none; padding: 3px 0; line-height: 1.35; }
+nav a:hover, nav a:focus-visible { color: var(--accent); text-decoration: underline; }
+main { min-width: 0; }
+h1, h2, h3 { font-family: var(--display); line-height: 1.12; text-wrap: balance; }
+h1 { font-size: clamp(38px, 6vw, 58px); font-weight: 700; margin: 0 0 14px; letter-spacing: -.01em; }
+h2 { font-size: 31px; font-weight: 700; margin: 64px 0 14px; padding-top: 16px; border-top: 2px solid var(--fg); scroll-margin-top: 16px; }
+h3 { font-size: 20px; font-weight: 700; margin: 26px 0 6px; }
+p, ul, ol { max-width: 68ch; margin: 0 0 13px; }
+li { margin-bottom: 6px; }
+a { color: var(--accent); }
+.lede { font-size: 19px; max-width: 62ch; }
+.eyebrow { font: 600 13px var(--mono); color: var(--accent); margin-bottom: 8px; }
+code { font: .88em var(--mono); background: var(--sunk); padding: 1px 5px; border-radius: 3px; overflow-wrap: anywhere; }
+.takeaway { background: var(--accent-soft); padding: 16px 20px; margin-block: 22px; max-width: 68ch; }
+.takeaway strong { display: block; font-family: var(--display); font-size: 18px; margin-bottom: 4px; }
+.takeaway p:last-child { margin-bottom: 0; }
+
+.flow { list-style: none; padding: 0; margin: 24px 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 8px; max-width: none; counter-reset: phase; }
+.flow li { background: var(--surface); border: 1px solid var(--line); padding: 10px 12px; margin: 0; font-size: 13.5px; line-height: 1.35; counter-increment: phase; }
+.flow li::before { content: "Phase " counter(phase); display: block; font: 600 11.5px var(--mono); color: var(--accent); margin-bottom: 3px; }
+.flow strong { display: block; font: 700 16px var(--display); margin-bottom: 2px; }
+
+.exhibit { margin: 14px 0 20px; }
+.exhibit figcaption { font: 600 12.5px var(--mono); color: var(--muted); margin-bottom: 5px; }
+pre { background: var(--term-bg); color: var(--term-fg); font: 13px/1.5 var(--mono); padding: 14px 16px; margin: 0; overflow-x: auto; tab-size: 2; }
+pre .d { color: var(--term-dim); }
+pre.diagram { background: var(--surface); color: var(--fg); border: 1px solid var(--line); }
+pre.diagram .d { color: var(--muted); }
+
+.tablewrap { overflow-x: auto; margin: 14px 0 22px; }
+table { border-collapse: collapse; width: 100%; font-size: 14.5px; font-variant-numeric: tabular-nums; }
+th { text-align: left; font: 700 13.5px var(--display); letter-spacing: .03em; padding: 7px 10px; border-bottom: 2px solid var(--fg); white-space: nowrap; }
+td { padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+td.n, th.n { text-align: center; }
+.full { background: var(--good-bg); color: var(--good); font-weight: 600; }
+.part { background: var(--mid-bg); color: var(--mid); font-weight: 600; }
+.none { background: var(--bad-bg); color: var(--bad); font-weight: 600; }
+tr.band td { background: var(--sunk); font: 700 13px var(--display); letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.sev { display: inline-block; font: 600 11px var(--mono); padding: 1px 6px; white-space: nowrap; }
+.sev.h { background: var(--bad-bg); color: var(--bad); }
+.sev.m { background: var(--mid-bg); color: var(--mid); }
+.sev.l { background: var(--sunk); color: var(--muted); }
+.defs { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 4px 16px; margin: 10px 0 16px; max-width: 68ch; }
+.defs dt { font: 700 14.5px var(--display); padding-top: 2px; }
+.defs dd { margin: 0 0 7px; }
+ol.steps { padding-left: 24px; }
+@media (max-width: 860px) {
+  .shell { display: block; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 24px 60px; }
+  nav { position: static; margin-bottom: 26px; padding: 4px 14px 12px; background: var(--surface); border: 1px solid var(--line); }
+  h2 { font-size: 27px; margin-top: 48px; }
+  .defs { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .defs dd { margin-bottom: 11px; }
+}
+</style>
+
+<div class="shell">
+<nav aria-label="Contents">
+  <b>Start</b>
+  <a href="#idea">The idea</a>
+  <a href="#scorecard">Main result</a>
+  <b>The seven phases</b>
+  <a href="#p1">1 Capture</a>
+  <a href="#p2">2 Normalise</a>
+  <a href="#p3">3 Graph</a>
+  <a href="#p4">4 Detect</a>
+  <a href="#p5">5 Seal</a>
+  <a href="#p6">6 Anchor</a>
+  <a href="#p7">7 Survivability</a>
+  <b>Testing</b>
+  <a href="#tamper">Tamper module</a>
+  <a href="#bugs">Bugs fixed</a>
+  <a href="#limits">Still open</a>
+  <a href="#run">What to run now</a>
+</nav>
+
+<main>
+<div class="eyebrow">S7 project · code review, 6 Nov 2026</div>
+<h1>QuantumGuard Field Guide</h1>
+<p class="lede">How each part of the system works, why it is there, what its output looks like, and what that output means. Sample outputs come from a copy of your own capture, taken when it held 269 events. Scores were re-measured later on 463 events.</p>
+
+<h2 id="idea">The idea</h2>
+<p>When attackers break into a Linux machine, the logs are what investigators use to work out what happened. An attacker with root can edit those same logs. Most provenance systems assume their input is honest. QuantumGuard treats the record itself as the thing under attack.</p>
+<p>It answers four questions, in this order: <em>Did we record everything? Does the record look tampered with? Can we prove it has not changed? How much evidence survives if it is damaged?</em></p>
+<ol class="flow">
+  <li><strong>Capture</strong>Kernel probe records every program start</li>
+  <li><strong>Normalise</strong>Clean and order raw events</li>
+  <li><strong>Graph</strong>Who ran what, as a graph</li>
+  <li><strong>Detect</strong>Rules and a GNN look for tampering</li>
+  <li><strong>Seal</strong>Hashes and two signatures lock the record</li>
+  <li><strong>Anchor</strong>Copy fingerprints off-site, by risk</li>
+  <li><strong>Survive</strong>Measure what evidence is left</li>
+</ol>
+
+<h2 id="scorecard">Main result: the seal does the real work</h2>
+<p>The new tamper module attacks the system and scores each layer alone. The top rows are attacks the GNN trained on. The bottom rows are attacks it never saw, written by someone who has read the code and keeps the graph self-consistent. Each row is 30 synthetic graphs the model did not train on.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Attack</th><th class="n">Rules</th><th class="n">GNN</th><th class="n">Reported verdict</th><th class="n">Seal</th></tr></thead>
+<tbody>
+<tr><td>Clean graph (should stay at 0%)</td><td class="n full">0%</td><td class="n full">0%</td><td class="n full">0%</td><td class="n full">0%</td></tr>
+<tr class="band"><td colspan="5">Seen in training</td></tr>
+<tr><td>Deletion, crude</td><td class="n part">63%</td><td class="n full">100%</td><td class="n full">100%</td><td class="n full">100%</td></tr>
+<tr><td>Deletion, expert</td><td class="n part">73%</td><td class="n full">100%</td><td class="n full">100%</td><td class="n full">100%</td></tr>
+<tr><td>Reorder, crude and expert</td><td class="n full">100%</td><td class="n full">100%</td><td class="n full">100%</td><td class="n full">100%</td></tr>
+<tr><td>Forgery, crude and expert</td><td class="n full">100%</td><td class="n full">100%</td><td class="n full">100%</td><td class="n full">100%</td></tr>
+<tr><td>Timeshift, crude and expert</td><td class="n full">100%</td><td class="n full">100%</td><td class="n full">100%</td><td class="n full">100%</td></tr>
+<tr class="band"><td colspan="5">Never seen in training</td></tr>
+<tr><td>Adaptive deletion</td><td class="n none">0%</td><td class="n none">3%</td><td class="n none">3%</td><td class="n full">100%</td></tr>
+<tr><td>Tail truncation</td><td class="n none">0%</td><td class="n none">0%</td><td class="n none">0%</td><td class="n full">100%</td></tr>
+<tr><td>Adaptive reorder</td><td class="n none">7%</td><td class="n none">13%</td><td class="n none">13%</td><td class="n full">100%</td></tr>
+<tr><td>Adaptive forgery</td><td class="n none">0%</td><td class="n none">33%</td><td class="n none">33%</td><td class="n full">100%</td></tr>
+<tr><td>Binary swap</td><td class="n none">0%</td><td class="n none">0%</td><td class="n none">0%</td><td class="n full">100%</td></tr>
+<tr><td>UID rewrite</td><td class="n none">7%</td><td class="n none">0%</td><td class="n none">7%</td><td class="n full">100%</td></tr>
+<tr><td>Flag abuse</td><td class="n full">100%</td><td class="n full">97%</td><td class="n full">100%</td><td class="n full">100%</td></tr>
+</tbody></table></div>
+<div class="takeaway">
+  <strong>How to say this in your review</strong>
+  <p>Detection catches careless attackers and sends the investigator to the right place. It can be beaten by a careful attacker. The seal cannot be beaten this way, because it never asks whether the graph looks wrong, only whether it changed. The two layers do different jobs, and the numbers show that.</p>
+</div>
+<p>GNN figures move by several points each time you train. Adaptive forgery has measured between 7% and 33%, so quote the pattern, not one exact figure.</p>
+<p>The old docs claimed "100% detection". That number was real only for the attacks the model trained on. A reviewer who tries a new attack would find this gap in minutes, so it is better that you present it first.</p>
+
+<h2 id="p1">Phase 1: Capture</h2>
+<div class="eyebrow">ebpf/probes.c · ebpf/loader.c · capture/collector.py · capture/cca.py</div>
+<dl class="defs">
+<dt>Purpose</dt><dd>Record every program that starts, in a way that makes lost events provable.</dd>
+<dt>Why eBPF</dt><dd>It runs inside the kernel, so a program cannot avoid it by changing its own behaviour, and it does not depend on any log file an attacker could edit before the data is read.</dd>
+<dt>What it keeps</dt><dd>Anything run by a user with uid 1000 or above, or inside a login session. The login uid is set when someone logs in and survives <code>sudo</code>, so root commands run by a person are recorded, while system services are filtered out as noise.</dd>
+<dt>Why CCA</dt><dd>If event 47 is missing, was it dropped under load or deleted by an attacker? Capture Completeness Attestation records losses as they happen, so anything missing without a record must be deletion.</dd>
+</dl>
+<pre class="diagram" aria-label="Capture data flow">execve / execveat  <span class="d">program starts</span>
+      │
+  eBPF probe       <span class="d">in the kernel; keeps login sessions, skips services; counts losses</span>
+      │  ring buffer, 16 MB
+  loader           <span class="d">C program; prints each event as escaped JSON</span>
+      │
+  collector        <span class="d">Python; adds Unix time, turns losses into sequence gaps</span>
+      ├── raw_events        <span class="d">one row per event, numbered in order</span>
+      ├── cca_attestation   <span class="d">one row per gap or restart</span>
+      └── completeness_*.json  <span class="d">signed summary, written on exit</span></pre>
+<figure class="exhibit"><figcaption>Your capture, just after the reboot</figcaption><pre>[87] code (PID 21019) → /home/profmoriarty/.opencode/bin/docker
+[88] code (PID 21019) → /home/profmoriarty/.nvm/versions/node/v22.17.1/bin/docker
+[89] code (PID 21019) → /home/profmoriarty/miniconda3/bin/docker</pre></figure>
+<p><strong>Reading it:</strong> <code>[87]</code> is the sequence number. <code>code</code> is the name of the program that made the call, here VS Code. The path is the program it tried to start. Several paths in a row means VS Code searching your <code>PATH</code> for <code>docker</code>. That is normal: the probe records the attempt, whether or not the file exists.</p>
+<p>The signed certificate lists the range covered and each lost sequence. <code>"complete": true</code> means nothing was lost. <code>false</code> means it names exactly what was lost, which is still a good result, because the loss is on record.</p>
+
+<h2 id="p2">Phase 2: Normalise</h2>
+<div class="eyebrow">graph/service.py: deduplicate, validate, enrich</div>
+<dl class="defs">
+<dt>Purpose</dt><dd>Turn raw events into something consistent, without hiding evidence.</dd>
+<dt>Deduplicate</dt><dd>Two events with the same PID and file within 2 ms count as one. The removed numbers are remembered, so they are not later mistaken for deletion.</dd>
+<dt>Validate</dt><dd>Checks order. After an attested reboot, time is shifted forward so it keeps increasing. Any other backwards jump stays in the graph for Phase 4 to report.</dd>
+<dt>Enrich</dt><dd>Gives each event a process ID, a <code>process_hash</code> of its PID, time and name, and a likely parent.</dd>
+</dl>
+<p><strong>What the result means on your data:</strong> 269 raw events became 247: 22 duplicates were merged, nothing was dropped, and time was shifted once at event 87. Before the fix, only 81 events survived.</p>
+
+<h2 id="p3">Phase 3: Provenance graph</h2>
+<div class="eyebrow">graph/service.py: build</div>
+<dl class="defs">
+<dt>Purpose</dt><dd>Investigators ask "what led to this?". That is a path through a graph, and a flat log cannot answer it directly.</dd>
+<dt>Nodes</dt><dd>Processes, files, and one synthetic session root per user, which adopts processes with no known parent.</dd>
+<dt>Edges</dt><dd><code>SPAWNS</code> (parent to child process) and <code>EXECUTES</code> (process to file). One event makes one of each, and both carry its sequence and time.</dd>
+</dl>
+<pre class="diagram" aria-label="Example provenance graph">P:ROOT:1000 <span class="d">(session root)</span>
+   │ SPAWNS
+   ▼
+P:100:1  bash ──EXECUTES──▶ F:/usr/bin/python3
+   │ SPAWNS
+   ▼
+P:101:2  python3 ──EXECUTES──▶ F:/usr/bin/git</pre>
+<figure class="exhibit"><figcaption>python main.py graph</figcaption><pre>Graph saved: 278 nodes, 494 edges</pre></figure>
+<p><strong>Reading it:</strong> 247 events give about 247 × 2 edges, which matches 494. The 278 nodes are 247 processes plus 30 files plus one root, so your session reran the same 30 programs many times. It writes <code>graphs/provenance_graph.gpickle</code> for later phases and a <code>.graphml</code> copy you can open in other tools.</p>
+
+<p><strong>To see it:</strong> <code>python main.py visualize</code> draws one box per program, with runs and tries on each arrow, and writes <code>graphs/provenance_graph.png</code> and <code>.svg</code>. Root programs are red and GNN-flagged programs have an orange border. The full per-process graph stays in the <code>.graphml</code> file.</p>
+
+<h2 id="p4">Phase 4: Poisoning detection</h2>
+<div class="eyebrow">detection/detector.py · features.py · model.py · synthetic.py</div>
+<p>Two detectors run side by side, because they fail in different ways.</p>
+<h3>Rule engine</h3>
+<p>These checks are always true for an honest graph, so any failure is proof of a problem. High and critical findings produce a TAMPERED verdict.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Rule</th><th>What it checks</th><th>Severity</th></tr></thead>
+<tbody>
+<tr><td><code>sequence_gap</code></td><td>A number is missing, with no attestation or dedup to explain it</td><td><span class="sev h">high</span></td></tr>
+<tr><td><code>duplicate_sequence</code></td><td>More than two relations share one sequence number</td><td><span class="sev h">high</span></td></tr>
+<tr><td><code>temporal_inversion</code></td><td>Time goes backwards as sequence goes forwards</td><td><span class="sev h">high</span></td></tr>
+<tr><td><code>causal_inversion</code></td><td>A child process started before its parent</td><td><span class="sev h">high</span></td></tr>
+<tr><td><code>edge_node_mismatch</code> (new)</td><td>A spawn edge and its child disagree on sequence or time</td><td><span class="sev h">high</span></td></tr>
+<tr><td><code>attribute_conflict</code></td><td>A PID changes user without a privilege helper such as <code>sudo</code>, or a real process is flagged as session root</td><td><span class="sev h">high</span></td></tr>
+<tr><td><code>process_hash_mismatch</code></td><td>The hash does not match the process's PID, time and name</td><td><span class="sev h">critical</span></td></tr>
+<tr><td><code>dangling_edge</code></td><td>An edge points at a node that does not exist</td><td><span class="sev h">critical</span></td></tr>
+<tr><td><code>self_loop</code>, <code>impossible_timestamp</code></td><td>A node linked to itself, or a negative time</td><td><span class="sev m">medium</span></td></tr>
+<tr><td><code>orphan_process</code></td><td>A process with no parent</td><td><span class="sev l">low</span></td></tr>
+</tbody></table></div>
+<h3>GraphSAGE model</h3>
+<p>Rules only catch what someone thought to write down. The GNN learns what tampering tends to look like and gives every node a suspicion score. GraphSAGE fits because a node's score depends on its neighbours, and tampering usually leaves odd patterns around a node as well as in it. It is written by hand in NumPy, and a numerical test checks its gradients.</p>
+<pre class="diagram" aria-label="GraphSAGE architecture">each node: 38 features  <span class="d">structure, timing, hash validity, uid, name bucket</span>
+      │
+  layer 1: own features + average of neighbours → 64 values, ReLU
+      │
+  layer 2: same again, so it sees two hops away → 64 values, ReLU
+      │
+  output: sigmoid → suspicion score, 0 to 1
+      │
+  graph alert if 2 or more nodes score above the threshold</pre>
+<p><strong>Training data:</strong> no public dataset of poisoned provenance graphs exists, so the project makes its own: 220 synthetic graphs of up to 300 events, some with normal <code>sudo</code> use, plus your capture, half with attacks applied. Every node an attack touched is labelled 1. Training uses Adam with a heavier loss weight on tampered nodes, since they are rare. The threshold is then raised until fewer than 5% of clean validation graphs alert.</p>
+<figure class="exhibit"><figcaption>Your clean capture: python main.py detect</figcaption><pre>  graph            : 278 nodes, 494 relations
+  verdict          : CLEAN (clean)
+  confidence       : 0.0
+  rule violations  : 0
+  GNN flagged      : 0 node(s) above 0.920</pre></figure>
+<figure class="exhibit"><figcaption>The same capture after forged events were added: python main.py detect --graph ...</figcaption><pre>  graph            : 302 nodes, 542 relations
+  verdict          : SUSPICIOUS (gnn)
+  confidence       : 0.9849
+  rule violations  : 0
+  GNN flagged      : 16 node(s) above 0.920</pre></figure>
+<dl class="defs">
+<dt>verdict</dt><dd><code>TAMPERED</code> means a rule found proof. <code>SUSPICIOUS</code> means only the GNN alerted, so confirm with <code>verify</code>. <code>CLEAN</code> means neither did. The brackets say who decided.</dd>
+<dt>confidence</dt><dd>1.0 when a rule fired. The average score of the flagged nodes when only the GNN alerted. 0 when clean.</dd>
+<dt>threshold</dt><dd>How sure the model must be before a node counts. It changes every time you train.</dd>
+</dl>
+<p><strong>Training metrics:</strong> on trained attacks, node F1 was 0.77 with AUC 0.95 in the latest run. At graph level, recall was 1.00, and precision has ranged from 0.88 to 1.00 across runs.</p>
+<p><strong>Real captures:</strong> the GNN raises false alarms on real data even after retraining on it. A clean 177-event capture came back SUSPICIOUS, although clean synthetic graphs scored 0%. Real use looks unlike the synthetic training data. False alarms also rise with size: 33% of clean 800-event synthetic graphs alerted. Scoring in chunks made it worse, because cutting a graph creates orphan processes. <code>detect</code> now prints a warning in this case. Rules and the seal are not affected by size.</p>
+
+<h2 id="p5">Phase 5: Sealing</h2>
+<div class="eyebrow">crypto/integrity.py</div>
+<dl class="defs">
+<dt>Purpose</dt><dd>Make any later change to the record provable, using mathematics instead of judgement.</dd>
+<dt>Merkle tree</dt><dd>Edges are split into partitions of 128. Each edge, with both its nodes, is hashed, and the hashes are combined to one root. Changing one edge changes the root. You can also prove one edge belongs without revealing the others.</dd>
+<dt>Hash chain</dt><dd>Each partition includes the hash of the one before it, so removing or reordering partitions breaks the chain. Each also records the total count, so removing the newest ones is caught too.</dd>
+<dt>Two signatures</dt><dd>Ed25519 is small and well proven today. ML-DSA-65 (FIPS 204) is designed to resist quantum computers, at 3309 bytes against 64. Both must pass, so an attacker has to break both. This is where the project's name comes from.</dd>
+<dt>Key store</dt><dd>Private keys are encrypted on disk with AES-GCM, using a key derived from your passphrase with scrypt. That is why the wrong passphrase gave you the error you first reported.</dd>
+<dt>Pinning</dt><dd>Each record carries its own public key, so a valid signature alone only proves that somebody signed it. <code>verify</code> now also requires it to be the expected key.</dd>
+</dl>
+<pre class="diagram" aria-label="One partition's Merkle tree and chain">                 root ── signed with Ed25519 AND ML-DSA
+                /    \
+              h12    h34
+             /  \    /  \
+           e1   e2  e3   e4      <span class="d">one hash per edge, nodes included</span>
+
+partition 0 ◀── partition 1 ◀── partition 2      <span class="d">each stores the previous hash</span></pre>
+<figure class="exhibit"><figcaption>python main.py seal, then verify</figcaption><pre>Partitions : 8
+Signed by  : Ed25519 + ML-DSA-65
+Verified   : PASS
+
+signer pinned to ff740a2f094805ec... (local key store)
+QuantumGuard verification: PASS (8 partitions)
+Evidence vs ledger: PASS
+Anchors: PASS  (3 externally anchored, 5 local-only, ledger 1 blocks)</pre></figure>
+<figure class="exhibit"><figcaption>Verifying the tampered copy against the same seal</figcaption><pre>QuantumGuard verification: FAIL (8 partitions)
+partition 0: merkle_ok failed
+<span class="d">... one line for each of the 8 partitions ...</span>
+147 unsealed relation(s) found in graph</pre></figure>
+<p><strong>Reading it:</strong> PASS means the graph is exactly what was sealed. <code>merkle_ok failed</code> means a relation sealed in that partition is missing or changed. <code>unsealed relation(s)</code> are in the graph but were never sealed, which is what insertion looks like. The count of 147 is more than the 48 relations forged here, because adding a run of a file also changes that file's node, and the seal covers every edge attached to it.</p>
+
+<h2 id="p6">Phase 6: Risk-adaptive anchoring</h2>
+<div class="eyebrow">anchoring/risk.py · service.py · ledger.py</div>
+<dl class="defs">
+<dt>Purpose</dt><dd>A signature shows evidence was not edited. It cannot help if root deletes everything. An anchor keeps a copy of the fingerprint somewhere else.</dd>
+<dt>Why by risk</dt><dd>Anchoring costs a blockchain transaction. Anchoring everything is too expensive, and anchoring nothing leaves you exposed. So the most valuable evidence gets the strongest protection.</dd>
+</dl>
+<div class="tablewrap"><table>
+<thead><tr><th>Signal</th><th class="n">Weight</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td>Rule violations</td><td class="n">0.25</td><td>Proof of inconsistency in this partition</td></tr>
+<tr><td>GNN suspicion</td><td class="n">0.25</td><td>How many flagged nodes, and how strongly</td></tr>
+<tr><td>Tamper alert</td><td class="n">0.20</td><td>Holds the evidence behind a TAMPERED verdict</td></tr>
+<tr><td>Privilege activity</td><td class="n">0.15</td><td>User changes or root execution</td></tr>
+<tr><td>Unattested gap</td><td class="n">0.10</td><td>Missing events with no CCA record</td></tr>
+<tr><td>Rare program</td><td class="n">0.05</td><td>A binary seen very rarely in this capture</td></tr>
+</tbody></table></div>
+<div class="tablewrap"><table>
+<thead><tr><th>Tier</th><th>When</th><th>Protection</th></tr></thead>
+<tbody>
+<tr><td>Tier 1, immediate</td><td>Score ≥ 0.45, a tamper alert, or a high/critical rule hit</td><td>Anchored now. Several in one pass share one transaction</td></tr>
+<tr><td>Tier 2, batched</td><td>Score ≥ 0.20</td><td>Held until 8 are waiting, then anchored under one second-level Merkle root</td></tr>
+<tr><td>Tier 3, local</td><td>Score below 0.20</td><td>Hash chain only, no cost</td></tr>
+</tbody></table></div>
+<p><strong>What the results mean:</strong> over 15 synthetic runs, clean captures scored at most 0.018 and tampered ones at least 0.268, so the 0.20 threshold separates them cleanly. Clean runs used 0 ledger transactions. Tampered runs anchored 250 partitions in 16 transactions, which is 15.6 times cheaper than one each. An attack the detector misses still scores like clean data, so it stays Tier 3. It is caught by the seal, but its fingerprints do not get copied off-site early.</p>
+<p>The ledger is a local file that imitates a blockchain's behaviour. A real Hyperledger Fabric network is what would stop a root attacker replacing it. <code>FabricLedger</code> refuses to run and does not fake a receipt.</p>
+
+<h2 id="p7">Phase 7: Forensic survivability</h2>
+<div class="eyebrow">evaluation/main.py</div>
+<p><strong>Purpose:</strong> detection asks "was there an attack?". An investigator's next question is "how much of my evidence can I still use?". This phase damages a copy of the graph in a chosen way and measures what is left.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Measure</th><th>Question it answers</th><th class="n">FSI weight</th></tr></thead>
+<tbody>
+<tr><td><strong>PIS</strong> Integrity Score</td><td>Of everything sealed, how much is still present and still matches?</td><td class="n">0.30</td></tr>
+<tr><td><strong>EPR</strong> Preservation Ratio</td><td>What share of captured events still appear?</td><td class="n">0.20</td></tr>
+<tr><td><strong>GRR</strong> Recovery Rate</td><td>What share of "A led to B" paths can still be walked?</td><td class="n">0.25</td></tr>
+<tr><td><strong>RA</strong> Recovery Accuracy</td><td>Of what the system calls authentic, how much really is?</td><td class="n">0.25</td></tr>
+<tr><td><strong>FSI</strong> Survivability Index</td><td>All four combined into one number</td><td class="n"></td></tr>
+</tbody></table></div>
+<figure class="exhibit"><figcaption>Your capture with 30% of processes deleted: python main.py evaluate --mode node --ratio 0.3</figcaption><pre>  PIS  Provenance Integrity Score      68.62 %
+  EPR  Evidence Preservation Ratio     70.04 %
+  GRR  Graph Recovery Rate             72.48 %
+  RA   Recovery Accuracy              100.00 %
+  FSI  Forensic Survivability Index    77.71 %
+  sealed relations  : 494
+  verified intact   : 339
+  provably deleted  : 155
+  GRR with bridges  : 75.48 %   (upper bound: needs the original topology)</pre></figure>
+<p><strong>Reading it:</strong> 30% of processes were removed and EPR shows about 70% remain, as it should. PIS is 339 ÷ 494. The most useful line is <code>provably deleted: 155</code>, because the investigator can now state exactly how much was removed.</p>
+<p><strong>About RA 100%:</strong> with sealing this is true by construction, since a matching hash is the original relation. The real measurement is the comparison: under a mixed delete-and-fabricate attack, RA is 80.80% without sealing and 100% with it, because the 72 fabricated relations are rejected. That 19.2 point gain is what sealing is worth.</p>
+
+<h2 id="tamper">The tamper module</h2>
+<div class="eyebrow">evaluation/tamper.py · tests/test_tamper.py</div>
+<p>This is what you asked for, to test the model. It works on copies in a temporary folder with a throwaway key store, so it cannot change your real graph, evidence, keys or ledger.</p>
+<figure class="exhibit"><figcaption>Commands</figcaption><pre><span class="d"># full scorecard: every attack against every layer</span>
+python main.py tamper test --trials 30
+
+<span class="d"># or attack once and inspect it yourself</span>
+python main.py tamper apply --attack adaptive_forgery
+python main.py detect --graph graphs/tampered_adaptive_forgery.gpickle \
+       --output evidence/tampered_detection.json
+python main.py verify --graph graphs/tampered_adaptive_forgery.gpickle</pre></figure>
+<h3>The seven attacks the model never saw</h3>
+<div class="tablewrap"><table>
+<thead><tr><th>Attack</th><th>What the attacker does</th></tr></thead>
+<tbody>
+<tr><td><code>adaptive_deletion</code></td><td>Removes whole events, re-parents their children, renumbers everything so no gap shows</td></tr>
+<tr><td><code>tail_truncate</code></td><td>Removes the newest events. Nothing later exists to reveal the gap</td></tr>
+<tr><td><code>adaptive_reorder</code></td><td>Swaps two events in time on nodes, edges and hashes together</td></tr>
+<tr><td><code>adaptive_forgery</code></td><td>Adds invented events with correct numbers, hashes and parents</td></tr>
+<tr><td><code>binary_swap</code></td><td>Makes a malicious program look like a harmless one</td></tr>
+<tr><td><code>uid_rewrite</code></td><td>Blames a different user</td></tr>
+<tr><td><code>flag_abuse</code></td><td>Marks real processes as session root to skip the checks</td></tr>
+</tbody></table></div>
+<h3>Reading the columns</h3>
+<dl class="defs">
+<dt>rules</dt><dd>The share of attacks where a high or critical rule fired.</dd>
+<dt>gnn</dt><dd>The share where the model alone would have alerted.</dd>
+<dt>fusion</dt><dd>The verdict the system reports: rules or GNN.</dd>
+<dt>seal</dt><dd>The share where verification failed against a seal made before the attack.</dd>
+<dt>node P, R</dt><dd>Of the nodes flagged, how many were really touched. Of those touched, how many were flagged.</dd>
+<dt>AUC</dt><dd>How well scores rank tampered above clean nodes: 1.0 is perfect, 0.5 is guessing. Held-out attacks got 0.42 to 0.76, and six of the seven were at 0.74 or below.</dd>
+<dt>CLEAN row</dt><dd>False alarms. Read this first, because a detector that always says "tampered" would score 100% on every other row.</dd>
+</dl>
+<p>That last point really happened. Before calibration, the GNN appeared to catch about 30% of unseen attacks. It also alarmed on 30% of clean graphs, so it was guessing.</p>
+<h3>Attacks on the evidence itself</h3>
+<p>These leave the graph alone and change the sealed records and ledger. All 17 were caught: editing a leaf, root, signed field or either signature; deleting, swapping or truncating partitions; a duplicate leaf; re-signing with an attacker's key; replacing only the ML-DSA key; a fake batch proof; a root that disagrees with the ledger; and editing, rebuilding or removing ledger blocks. The command exits with status 2 if any of these is missed.</p>
+<h3>Your real capture</h3>
+<p>The same matrix on 8 windows of your capture gave 0% false alarms and a 100% seal. Treat its GNN numbers as optimistic, because the model trained on this same capture. A new line in the report shows the verdict on the whole capture too, because <code>detect</code> runs on the whole graph and small windows can hide size problems. When I trained on the first half and tested on the second, false alarms on small windows were 0/3 with one seed and 3/3 with another. One capture is too little to claim a real-world false alarm rate, so do not quote one.</p>
+
+<h2 id="bugs">Bugs found and fixed</h2>
+<p>Ordered by how much they mattered. The 48 new tests in <code>tests/test_tamper.py</code> cover the behaviour changes, and the full suite now passes 124 of 124.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Impact</th><th>Bug</th><th>Effect</th><th>Fix</th></tr></thead>
+<tbody>
+<tr class="band"><td colspan="4">Evidence lost or attacks missed</td></tr>
+<tr><td><span class="sev h">critical</span></td><td>A reboot restarts the kernel clock</td><td>166 of your 247 events were thrown away after the reboot</td><td>Time stored as Unix time. Older data is shifted at attested restarts</td></tr>
+<tr><td><span class="sev h">critical</span></td><td>Events numbered after the ring buffer</td><td>CCA could never detect a kernel loss, so novelty claim 1 did not work in practice</td><td>Kernel counts losses, and they become attested gaps</td></tr>
+<tr><td><span class="sev h">critical</span></td><td>Signer key not checked</td><td>Rewrite everything, sign with your own key, and verify says PASS</td><td>Both public keys pinned, with <code>--trust-file</code> for an off-host copy</td></tr>
+<tr><td><span class="sev h">critical</span></td><td>Chain had no length</td><td>Remove the newest partitions and their edges: PASS</td><td>Signed partition count</td></tr>
+<tr><td><span class="sev h">critical</span></td><td>Ledger never compared to evidence</td><td>Anchors could not catch rewritten evidence, their main purpose</td><td><code>verify</code> compares sealed roots with anchored roots</td></tr>
+<tr><td><span class="sev h">critical</span></td><td>Root's commands were not captured</td><td>The stated attacker has root, but <code>uid &lt; 1000</code> hid all of it, including every <code>sudo</code> command</td><td>Filter on login session. <code>sudo</code> children now link back to the user</td></tr>
+<tr><td><span class="sev h">high</span></td><td>Quote in a file name broke the JSON</td><td>Run <code>/tmp/a"b</code> and it was never recorded. Non-UTF-8 names could crash capture</td><td>Loader escapes names. Unreadable events leave an attested gap</td></tr>
+<tr><td><span class="sev h">high</span></td><td><code>execveat</code> not traced</td><td>Programs could run without being seen</td><td>Second tracepoint added</td></tr>
+<tr><td><span class="sev h">high</span></td><td>Fake batch proof accepted</td><td>Inclusion was checked against a root the attacker supplied</td><td>The root must be in the ledger</td></tr>
+<tr><td><span class="sev h">high</span></td><td>Unsealed <code>synthetic_root</code>; blank hash skipped</td><td>A real process could be exempted from all rules without breaking the seal</td><td>Seal format 2, plus two new rule checks. Old seals still verify</td></tr>
+<tr><td><span class="sev h">high</span></td><td>Deleting an event was "medium"</td><td>Deleting one event gave a CLEAN verdict with no model</td><td>Unexplained gap is now high</td></tr>
+<tr class="band"><td colspan="4">Wrong results</td></tr>
+<tr><td><span class="sev h">high</span></td><td>GNN threshold ignored false alarms</td><td>30% of clean graphs flagged, including your real capture</td><td>Calibrated threshold, training graphs up to 300 events, and normal <code>sudo</code> in training (false alarms 7/60 to 0/60). Still unreliable above 300 events, see above</td></tr>
+<tr><td><span class="sev m">medium</span></td><td>A GNN score was called TAMPERED</td><td>A statistical guess was worded the same as proof</td><td>New <code>SUSPICIOUS</code> verdict, and a warning on large captures</td></tr>
+<tr><td><span class="sev h">high</span></td><td>"Only the GNN catches expert reorder"</td><td>The README's main argument for the model. A one-line rule catches it every time, with no false alarms</td><td>New rule; README corrected</td></tr>
+<tr><td><span class="sev m">medium</span></td><td>Duplicates reported as deletion</td><td>5 false <code>sequence_gap</code> hits on your clean capture</td><td>Merged numbers are recorded</td></tr>
+<tr><td><span class="sev m">medium</span></td><td>Locked key store scored PIS as 0</td><td>FSI silently showed 70. This caused the 6 failing tests</td><td>Evaluation no longer needs keys</td></tr>
+<tr><td><span class="sev m">medium</span></td><td>GRR used the original graph</td><td>Bridging needs information an investigator does not have</td><td>GRR and FSI computed without it. Bridged figure shown as upper bound</td></tr>
+<tr><td><span class="sev m">medium</span></td><td>RA compared endpoints only</td><td>An edited relation counted as genuine</td><td>Compares content; new <code>edit</code> damage mode</td></tr>
+<tr><td><span class="sev m">medium</span></td><td>Train and test windows overlapped</td><td>The same real events could appear in both</td><td>Non-overlapping windows</td></tr>
+<tr><td><span class="sev m">medium</span></td><td><code>anchor</code> never used the verdict</td><td>The tamper alert signal did nothing from the CLI. The demo always blamed partition 0</td><td>Alerts now follow the evidence. Stale reports are ignored</td></tr>
+<tr class="band"><td colspan="4">Reliability</td></tr>
+<tr><td><span class="sev m">medium</span></td><td>Tests wrote to real paths</td><td>Running them overwrote your real graph. It happened in this review and has been restored</td><td>Tests run in a temporary folder</td></tr>
+<tr><td><span class="sev m">medium</span></td><td>Re-sealing a run; partial database update</td><td>Could leave new hashes with old signatures</td><td>Sealed runs cannot be overwritten</td></tr>
+<tr><td><span class="sev l">low</span></td><td>Smaller fixes</td><td><code>verify</code> mixed all runs; demo needed your real keys; duplicate Merkle leaf not rejected; silent PostgreSQL fallback; no certificate on SIGTERM; traceback on wrong passphrase; capture restarted numbering if the store failed; uid 0 read as missing; key store not written atomically; stale doc numbers</td><td>All fixed</td></tr>
+</tbody></table></div>
+
+<h2 id="limits">Still open</h2>
+<p>These need a decision or more work, so I left them. They are also in <code>PROJECT_STATUS.md</code>.</p>
+<ul>
+<li><strong>An exploited root service can go unseen.</strong> Login-session capture records <code>sudo</code>, <code>su</code> and root logins. A system service has no login session, so an attacker who gets root by exploiting one looks like every other service and is filtered out. Removing the filter closes this, but records all service activity. This is the biggest remaining capture gap.</li>
+<li><strong>The GNN is unreliable on real captures.</strong> Treat SUSPICIOUS as a prompt to run <code>verify</code>, not as evidence. Training on more realistic data is the fix.</li>
+<li><strong>Commands typed in a terminal are mostly missing from captures, cause unknown.</strong> Captures hold events from VS Code, its scripts and <code>claude</code>, but not <code>python main.py</code> commands run during the capture, including with the original probe. A certificate saying "0 missing" only covers events that reached the collector. Do not claim every exec is captured until this is explained.</li>
+<li><strong>Parents are guessed from program names.</strong> The probe could read the real parent PID from the kernel. Your docs claim "causally correct", which this does not fully support.</li>
+<li><strong>Only program starts are captured.</strong> There are no file reads or network connections.</li>
+<li><strong>The seal only protects from the moment it is made.</strong> Anything altered before <code>seal</code> runs gets sealed as if true. Sealing soon after capture narrows that window.</li>
+<li><strong>The key store is on the same host.</strong> A root attacker can replace it, which is why <code>--trust-file</code> with an off-host copy matters.</li>
+<li><strong>The ledger is local</strong>, and removing its newest blocks is only caught if the anchoring report still exists.</li>
+<li><strong>GNN generalisation</strong> is weak on unseen attacks. Training on the adaptive attacks would raise these numbers, but they would then no longer count as unseen.</li>
+</ul>
+<h3>Not yet tested</h3>
+<ul>
+<li><strong>Login-session capture compiles, and its field resolves against your kernel's type data, but it has not been loaded into a kernel.</strong> That needs root. Run the <code>sudo</code> check below to confirm it. Your own run has already confirmed the earlier probe changes and sealing to PostgreSQL on real systems.</li>
+</ul>
+
+<h2 id="run">What to run now</h2>
+<p>Nothing is committed. Stop any running capture with Ctrl-C first, so it writes its certificate. Then run these in order:</p>
+<figure class="exhibit"><figcaption>From the project root, with the virtual environment active</figcaption><pre><span class="d"># 1. your key store's passphrase (see the first answer in this session)</span>
+export QG_KEYSTORE_PASSPHRASE='something-long-and-not-this'
+
+<span class="d"># 2. rebuild the probe, then capture. In another terminal run: sudo ls
+#    Then press Ctrl-C in the capture terminal</span>
+make -C ebpf clean all
+python main.py capture
+
+<span class="d"># 3. confirm root was captured: expect a row with uid 0 and /usr/bin/ls</span>
+psql "postgresql://quantumguard:StrongPassword123@localhost/provenance" \
+  -c "select sequence, uid, comm, filename from raw_events where uid = 0 order by sequence desc limit 5"
+
+<span class="d"># 4. run the pipeline on the full data</span>
+python main.py graph
+python main.py train
+python main.py all
+python main.py verify
+
+<span class="d"># 5. tests and scorecard</span>
+python -m tests.run_all
+python main.py tamper test --trials 30</pre></figure>
+<p>Your older sealed runs were made from a smaller graph, so <code>verify</code> checks only the latest run by default. Older runs signed with your previous key will report "signed by an unexpected key" if you ask for them with <code>--run-id</code>. That is the pinning working as designed.</p>
+</main>
+</div>
+
+</body></html>

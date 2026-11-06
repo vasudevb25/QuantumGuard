@@ -9,10 +9,15 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
 from core import config
+
+
+class SchemaOutdated(RuntimeError):
+    """The database predates a column this version writes."""
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -89,6 +94,13 @@ class FileStore:
         for record in self._read("cca_attestation.jsonl"):
             missing.update(record.get("missing") or [])
         return missing
+
+    def load_session_boundaries(self) -> set[int]:
+        """First sequence of every resumed session. See graph/service.py:
+        the capture clock may legitimately restart at these points only."""
+        return {record["expected"] for record in self._read("cca_attestation.jsonl")
+                if record.get("expected") == record.get("received")
+                and not record.get("missing")}
 
     def save_partitions(self, records: list[dict[str, Any]]) -> None:
         path = self.directory / "graph_partitions.json"
@@ -193,6 +205,16 @@ class PostgreSQLStore:
             missing.update(data)
         return missing
 
+    def load_session_boundaries(self) -> set[int]:
+        """First sequence of every resumed session. A real gap always has
+        expected != received, so these rows are unambiguous."""
+        with self.engine.begin() as connection:
+            rows = connection.execute(self._text(
+                "SELECT expected FROM cca_attestation WHERE complete = false "
+                "AND expected = received AND jsonb_array_length(missing_sequences) = 0"
+            )).scalars().all()
+        return {int(value) for value in rows}
+
     def save_session(self, session: dict[str, Any]) -> None:
         with self.engine.begin() as connection:
             connection.execute(self._text("""INSERT INTO capture_sessions
@@ -215,19 +237,39 @@ class PostgreSQLStore:
             (run_id, partition_index, seq_start, seq_end, leaf_count, merkle_root,
              prev_record_hash, record_hash, risk_tier_hint, ed25519_public_key,
              ed25519_signature, mldsa_algorithm, mldsa_public_key, mldsa_signature,
-             leaf_hashes, created_at)
+             leaf_hashes, created_at, seal_format, total_partitions)
             VALUES (:run_id, :partition_index, :seq_start, :seq_end, :leaf_count,
              :merkle_root, :prev_record_hash, :record_hash, :risk_tier_hint,
              :ed25519_public_key, :ed25519_signature, :mldsa_algorithm,
-             :mldsa_public_key, :mldsa_signature, CAST(:leaf_hashes AS JSONB), :created_at)
+             :mldsa_public_key, :mldsa_signature, CAST(:leaf_hashes AS JSONB), :created_at,
+             :seal_format, :total_partitions)
             ON CONFLICT (run_id, partition_index) DO UPDATE SET
-             record_hash=EXCLUDED.record_hash, merkle_root=EXCLUDED.merkle_root,
-             leaf_hashes=EXCLUDED.leaf_hashes, created_at=EXCLUDED.created_at""")
-        with self.engine.begin() as connection:
-            for record in records:
-                data = dict(record)
-                data["leaf_hashes"] = json.dumps(data["leaf_hashes"])
-                connection.execute(sql, data)
+             seq_start=EXCLUDED.seq_start, seq_end=EXCLUDED.seq_end,
+             leaf_count=EXCLUDED.leaf_count, merkle_root=EXCLUDED.merkle_root,
+             prev_record_hash=EXCLUDED.prev_record_hash,
+             record_hash=EXCLUDED.record_hash,
+             risk_tier_hint=EXCLUDED.risk_tier_hint,
+             ed25519_public_key=EXCLUDED.ed25519_public_key,
+             ed25519_signature=EXCLUDED.ed25519_signature,
+             mldsa_algorithm=EXCLUDED.mldsa_algorithm,
+             mldsa_public_key=EXCLUDED.mldsa_public_key,
+             mldsa_signature=EXCLUDED.mldsa_signature,
+             leaf_hashes=EXCLUDED.leaf_hashes, created_at=EXCLUDED.created_at,
+             seal_format=EXCLUDED.seal_format,
+             total_partitions=EXCLUDED.total_partitions""")
+        from sqlalchemy.exc import ProgrammingError
+        try:
+            with self.engine.begin() as connection:
+                for record in records:
+                    data = {"seal_format": None, "total_partitions": None, **record}
+                    data["leaf_hashes"] = json.dumps(data["leaf_hashes"])
+                    connection.execute(sql, data)
+        except ProgrammingError as exc:
+            if "does not exist" not in str(exc):
+                raise
+            raise SchemaOutdated(
+                "the database schema is out of date. Apply it, then seal again:\n"
+                "  sudo -u postgres psql -d provenance -f database/schema.sql") from exc
 
     def load_partitions(self, run_id: str | None = None) -> list[dict[str, Any]]:
         statement = "SELECT * FROM graph_partitions"
@@ -405,7 +447,12 @@ def get_store():
             with candidate.engine.connect():
                 pass
             _store = candidate
-        except Exception:
+        except Exception as exc:
+            # Stated out loud: evidence silently split between two backends
+            # looks exactly like evidence that went missing.
+            reason = str(getattr(exc, "orig", None) or exc).strip().splitlines()[0]
+            print(f"[store] PostgreSQL unavailable ({reason}); using file "
+                  f"evidence store", file=sys.stderr)
             _store = FileStore()
     else:
         raise ValueError("QG_STORE must be one of: db, file, auto")

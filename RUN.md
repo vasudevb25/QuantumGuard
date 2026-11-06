@@ -56,7 +56,7 @@ python main.py keys
 python -m tests.run_all
 ```
 
-Expect `76 tests, 0 failed, 0 errors`.
+Expect `124 tests, 0 failed, 0 errors`.
 
 ### 2.2 The demonstration
 
@@ -108,11 +108,10 @@ Under a minute on CPU. Writes `models/gnn_detector.npz` and its
 `.meta.json` sidecar.
 
 Detection works without a model — the rule engine runs alone and says
-so — but be aware of what you lose. The rules reliably catch **forgery**
-and **timeshift**; they often report **deletion** and **reorder** as
-clean, because a sophisticated deletion breaks no invariant above `low`
-severity. That gap is exactly what the GNN fills, and the cryptographic
-verifier catches both regardless.
+so — but be aware of what you lose. The rules miss about 30% of partial
+**deletions**, which the GNN catches. Neither reliably catches an attacker who
+keeps the graph self-consistent; the cryptographic verifier catches those.
+`python main.py tamper test` measures all of this.
 
 ---
 
@@ -283,7 +282,7 @@ python main.py certify evidence/completeness_a1b2c3d4.json
 ### 5.3 Visualise
 
 ```bash
-python graph/visualize.py        # graphs/provenance_graph.png
+python main.py visualize         # graphs/provenance_graph.png, one box per program
 ```
 
 ---
@@ -397,6 +396,9 @@ see §2.4 for what you lose.
 **`ImportError: Install 'dilithium-py' or 'liboqs-python'`**
 `pip install dilithium-py`.
 
+**`the database schema is out of date`**
+Seal format 2 added two columns. Re-apply `database/schema.sql` (see §3.2).
+
 **`key store could not be unlocked`**
 `QG_KEYSTORE_PASSPHRASE` differs from when the store was created. Set it
 back, or `rm -rf keys/` and reseal — signatures made with the lost key
@@ -427,7 +429,8 @@ fabricated transaction id. Use `--ledger local`.
 ## 10. Before a review — checklist
 
 ```bash
-python -m tests.run_all                                   # 76/76
+python -m tests.run_all                                   # 124/124
+python main.py tamper test --trials 30                    # which layer sees what
 export QG_KEYSTORE_PASSPHRASE='<your own>'                # not the default
 python main.py capture                                    # 15+ min of real use
 python main.py graph

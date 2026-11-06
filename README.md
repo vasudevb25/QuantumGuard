@@ -13,7 +13,7 @@ quantifies how much of it would survive a compromise.
 > privileges as the logging system itself. QuantumGuard treats the audit
 > record as the thing under attack.
 
-**Status: all seven phases implemented.** 76 tests pass with no
+**Status: all seven phases implemented.** 124 tests pass with no
 PostgreSQL, eBPF or root. Limitations are stated in
 [Known limitations](#known-limitations) rather than left for a reader to
 discover.
@@ -33,17 +33,61 @@ you get the same shape.
 | deletion | crude | 15/15 | 15/15 | 15/15 |
 | deletion | sophisticated | 15/15 | 15/15 | 15/15 |
 | reorder | crude | 15/15 | 15/15 | 15/15 |
-| **reorder** | **sophisticated** | **15/15** | **0/15** | **15/15** |
+| reorder | sophisticated | 15/15 | 15/15 | 15/15 |
 | forgery | crude | 15/15 | 15/15 | 15/15 |
 | forgery | sophisticated | 15/15 | 15/15 | 15/15 |
 | timeshift | crude | 15/15 | 15/15 | 15/15 |
 | timeshift | sophisticated | 15/15 | 15/15 | 15/15 |
 
-The bold row is why the learned component exists. A sophisticated
-reorder swaps sequence numbers *and* timestamps together, so every
-deterministic invariant remains satisfied and the rule engine sees
-nothing. The GNN catches it in all 15 trials on structural grounds. One
-row of this table is the entire argument for not shipping rules alone.
+"By rules" and "by GNN" here count any hit at all, including low-severity
+rule hits. These are also the attacks the GNN trained on. See the tamper
+scorecard below for what each layer does when it has to decide alone, and
+against attacks it has never seen.
+
+An earlier version of this table showed the rules catching 0/15 sophisticated
+reorders. That attack swaps sequence and time on edges but not nodes, and a
+one-line comparison of the two now catches it (`edge_node_mismatch`), so it is
+no longer evidence for the learned component.
+
+### Tamper scorecard: which layer notices what
+
+`python main.py tamper test --trials 30`, on synthetic graphs the model did not
+train on. "Trained" attacks are the ones in the model's training data.
+"Held out" attacks were never in it, and keep the graph self-consistent. A layer
+counts only if it would raise an alert by itself.
+
+| Attack | Family | Rules | GNN | Reported verdict | Seal |
+|---|---|---|---|---|---|
+| clean graph (false alarms) | | 0% | 0% | 0% | 0% |
+| deletion, crude | trained | 63% | 100% | 100% | 100% |
+| deletion, expert | trained | 73% | 100% | 100% | 100% |
+| reorder, crude / expert | trained | 100% | 100% | 100% | 100% |
+| forgery, crude / expert | trained | 100% | 100% | 100% | 100% |
+| timeshift, crude / expert | trained | 100% | 100% | 100% | 100% |
+| adaptive deletion | held out | 0% | 3% | 3% | 100% |
+| tail truncation | held out | 0% | 0% | 0% | 100% |
+| adaptive reorder | held out | 7% | 13% | 13% | 100% |
+| adaptive forgery | held out | 0% | 33% | 33% | 100% |
+| binary swap | held out | 0% | 0% | 0% | 100% |
+| uid rewrite | held out | 7% | 0% | 7% | 100% |
+| flag abuse | held out | 100% | 97% | 100% | 100% |
+
+The bottom half is the main result. **Against an attacker who keeps the graph
+self-consistent, detection mostly fails and only the seal holds.** GNN figures
+move by several points between training runs: adaptive forgery has measured
+between 7% and 33%. The GNN adds real value on partial deletions the rules miss,
+but it does not generalise well to attack types it has not seen.
+
+**Real captures:** the GNN raises false alarms on real data even after retraining
+on it. A clean 177-event capture was flagged, as were 2 of its 3 windows,
+although clean synthetic graphs scored 0%. Real use looks unlike the synthetic
+training data: most events there were PATH lookups by a program started before
+the capture. False alarms also rise with size, reaching 33% of clean 800-event
+synthetic graphs. A GNN-only result is therefore reported as SUSPICIOUS, never
+TAMPERED, and warns above the 300-event training limit. Rules and the seal are
+not affected by any of this. All 17 attacks on the sealed records and the ledger are
+also caught. The seal depends on a trusted seal having been made before the
+attack and on the signer's key being pinned.
 
 ### Integrity — what the cryptographic layer catches
 
@@ -63,8 +107,8 @@ second line on top of this, not a substitute for it.
 ### Risk scoring — separation between clean and tampered
 
 ```
-clean captures    (15 runs): mean 0.021   max 0.075
-tampered captures (15 runs): mean 0.364   min 0.228
+clean captures    (15 runs): mean 0.008   max 0.018
+tampered captures (15 runs): mean 0.430   min 0.268
 ```
 
 | Threshold | Clean runs anchoring anything | Tampered runs anchored |
@@ -72,23 +116,23 @@ tampered captures (15 runs): mean 0.364   min 0.228
 | 0.10 | 0/15 | 15/15 |
 | 0.15 | 0/15 | 15/15 |
 | **0.20** | **0/15** | **15/15** |
-| 0.25 | 0/15 | 11/15 |
-| 0.30 | 0/15 | 8/15 |
+| 0.25 | 0/15 | 15/15 |
+| 0.30 | 0/15 | 13/15 |
 
-The Tier-2 threshold is **calibrated on this separation, not chosen**.
-An earlier guessed value of 0.25 missed roughly a quarter of tampered
-runs; 0.20 sits inside the gap between the highest clean score (0.075)
-and the lowest tampered score (0.228).
+The Tier-2 threshold sits inside the gap between the highest clean score
+(0.018) and the lowest tampered score (0.268). These tampered runs use the
+trained attacks; a held-out attack the detector misses scores like a clean run
+and is not anchored early.
 
 ### Anchoring cost — does cost follow risk?
 
 | | Partitions | Externally anchored | Ledger transactions |
 |---|---|---|---|
 | 15 clean runs | 300 | 0 | **0** |
-| 15 tampered runs | 304 | 189 | **16** |
+| 15 tampered runs | 304 | 250 | **16** |
 
-A clean capture consumes nothing. A compromised one anchors 189
-partitions in 16 transactions — **11.8× batching compression** — because
+A clean capture consumes nothing. A compromised one anchors 250
+partitions in 16 transactions — **15.6× batching compression** — because
 Tier-2 members share one second-order Merkle tree and each keeps an
 inclusion proof into it.
 
@@ -98,9 +142,9 @@ inclusion proof into it.
 |---|---|---|---|---|---|
 | 0% | 100.00 | 100.00 | 100.00 | 100.00 | 100.00 |
 | 15% | 85.00 | 100.00 | 75.10 | 100.00 | 89.28 |
-| 30% | 70.00 | 93.00 | 46.55 | 100.00 | 76.24 |
-| 50% | 50.00 | 78.50 | 27.27 | 100.00 | 62.52 |
-| 75% | 25.00 | 54.50 | 19.75 | 100.00 | 48.34 |
+| 30% | 70.00 | 93.00 | 45.43 | 100.00 | 75.96 |
+| 50% | 50.00 | 78.50 | 23.54 | 100.00 | 61.59 |
+| 75% | 25.00 | 54.50 | 7.78 | 100.00 | 45.34 |
 
 *(edge-removal mode; `node` and `window` modes are in the benchmark
 output and behave comparably)*
@@ -112,31 +156,38 @@ and without the Phase 5 sealed evidence available:
 
 | | PIS | EPR | GRR | RA | FSI |
 |---|---|---|---|---|---|
-| with sealing | 75.75 | 98.50 | 64.93 | **100.00** | 83.66 |
-| without sealing | 0.00 | 98.50 | 64.93 | **80.80** | 56.13 |
+| with sealing | 75.75 | 98.50 | 64.55 | **100.00** | 83.56 |
+| without sealing | 0.00 | 98.50 | 64.55 | **80.80** | 56.04 |
 
 72 relations were fabricated. With sealed evidence the system rejected
 every one of them; without it, it accepted them as authentic. **Recovery
-Accuracy +19.20 points.** This quantifies what Phase 5 buys rather than
-asserting it.
+Accuracy +19.20 points.** The sealed 100% is true by construction, since a
+matching leaf hash is the original relation. The measurement is the unsealed
+80.80%.
 
 ### GNN detector
 
-Trained on 260 synthetic base graphs plus windows of real capture,
-40 epochs, CPU, under one minute:
+Trained on 220 synthetic graphs of 25-300 events, some with normal sudo use,
+plus the real capture, 40 epochs, CPU, under one minute. Figures are from one
+training run on the project's 463-event capture and move between runs:
 
 | Split | Precision | Recall | F1 | AUC |
 |---|---|---|---|---|
-| Validation — node | 0.751 | 0.717 | 0.733 | 0.946 |
-| Test — node | 0.775 | 0.611 | 0.684 | 0.937 |
+| Validation — node | 0.820 | 0.790 | 0.805 | 0.961 |
+| Test — node | 0.806 | 0.744 | 0.774 | 0.954 |
 | Test — graph | 1.000 | 1.000 | 1.000 | — |
 
-Node-level F1 in the high sixties is the honest number. The label marks
+The threshold is raised until clean validation graphs rarely alert, because
+choosing it by node F1 alone produced false alarms on 30% of clean graphs. These
+splits contain only the trained attacks; see the tamper scorecard for the rest.
+
+Node-level F1 is limited by the labels. The label marks
 every node a corruption operator touched, including nodes at the
 periphery of a deletion whose own features barely change — those are
 genuinely ambiguous, and the ceiling is a property of the labelling
-scheme rather than the architecture. Graph-level, which is the decision
-the system actually makes, is 1.00.
+scheme rather than the architecture. The decision the system actually makes is
+at graph level. Its test split held 35 graphs, and across training runs its
+precision has measured between 0.88 and 1.00.
 
 ---
 
@@ -358,18 +409,41 @@ relation the archive attests to, whether it is `intact`, `missing`
 lets an investigator say "these 62 relations were deleted after capture"
 rather than "some events seem to be missing".
 
-Where a deleted process sat between two survivors, a bridge edge is
-inserted marked `inferred=True`. Bridges count toward GRR — restoring
-reachability is exactly what they do — and are excluded from RA, because
-crediting them would let the system score itself on its own guesses.
+Where a deleted process sat between two survivors, a bridge edge marked
+`inferred=True` can be added, but finding those places needs the original
+graph, and sealed evidence holds only hashes. A real investigator does not have
+that, so GRR and FSI are computed without bridges. `GRR_bridged` is reported
+separately as an upper bound.
 
 ---
+
+## Tamper testing
+
+`python main.py tamper` attacks copies of the evidence and scores each layer
+separately. It uses a temporary key store and ledger, so it never changes the
+real graph, evidence, keys or ledger.
+
+```bash
+python main.py tamper test --trials 30                    # full scorecard
+python main.py tamper apply --attack adaptive_forgery     # one tampered copy
+python main.py detect --graph graphs/tampered_adaptive_forgery.gpickle \
+       --output evidence/tampered_detection.json          # does the detector see it?
+python main.py verify --graph graphs/tampered_adaptive_forgery.gpickle   # does the seal?
+```
+
+Graph attacks come in two families: `deletion/reorder/forgery/timeshift` at
+`_crude` and `_expert` levels, which the GNN trained on, and `adaptive_deletion`,
+`tail_truncate`, `adaptive_reorder`, `adaptive_forgery`, `binary_swap`,
+`uid_rewrite` and `flag_abuse`, which it never saw. Evidence attacks modify the
+sealed records and the ledger instead. Results are saved to
+`evaluation/tamper_report.json`, and the exit status is 2 if an evidence attack
+goes undetected.
 
 ## Quick start
 
 ```bash
 pip install -r requirements.txt
-python -m tests.run_all                      # 76 tests
+python -m tests.run_all                      # 124 tests
 python main.py demo --partition-size 16      # full offline demonstration
 python -m tests.benchmark                    # regenerate every number above
 ```
@@ -398,11 +472,13 @@ anchoring/        Phase 6  risk scoring, ledger, tiered anchoring
   ledger.py                append-only chained ledger; Fabric interface
   service.py               tier assignment, second-order batching
 evaluation/       Phase 7  attack simulation, recovery, five measures
+                           tamper.py: attacks every layer and scores it
 core/                      config and the storage boundary
 tests/
   test_all.py              Phases 1-5            (27 tests)
-  test_phase67.py          Phases 6-7 and CCA    (46 tests)
-  run_all.py               both                  (76 tests)
+  test_phase67.py          Phases 6-7 and CCA    (49 tests)
+  test_tamper.py           bug regressions and tamper harness (48 tests)
+  run_all.py               all three             (124 tests)
   benchmark.py             reproducible measured results
 ```
 
@@ -442,6 +518,16 @@ receipt would be worse than an honest failure.
 spawned them, not file reads or network connections. The graph is a
 process tree with file targets, not a full data-flow graph. Extending to
 `vfs_write` and `tcp_connect` probes is future work.
+
+**An exploited root service can still go unseen.** Capture keeps anything run
+by a user with uid >= 1000 or inside a login session, so `sudo`, `su` and a root
+login are recorded. A system service has no login session, so an attacker who
+gets root by exploiting one looks like every other service and is filtered out.
+Removing the filter closes this but records all service activity.
+
+**Parents are inferred, not observed.** A process's parent is the most recent
+event whose binary name matches its `comm`. The probe could read the real parent
+pid from the kernel, which would remove this guesswork.
 
 **Attack reconstruction is not implemented**, despite appearing in the
 project title. Reconstruction systems such as Kairos operate on a

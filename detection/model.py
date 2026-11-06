@@ -210,6 +210,26 @@ def best_threshold(y_true, scores, grid=None) -> tuple[float, dict]:
     return best, best_m
 
 
+def calibrate_threshold(model, samples, f1_threshold: float,
+                        target_false_alarms: float = 0.05) -> float:
+    """Raise the threshold until clean validation graphs rarely alert.
+
+    Choosing by node F1 alone says nothing about the number that matters
+    operationally: how often a clean graph is called tampered. A graph alerts
+    when GRAPH_ALERT_MIN_NODES nodes reach the threshold, so that node's score
+    in each clean graph is the threshold at which that graph would alert.
+    """
+    k = config.GRAPH_ALERT_MIN_NODES
+    needed = [float(np.sort(score)[-k])
+              for score in (model.predict(s.X, s.A)
+                            for s in samples if not s.tampered)
+              if len(score) >= k]
+    if not needed:
+        return f1_threshold
+    return max(f1_threshold,
+               float(np.quantile(needed, 1.0 - target_false_alarms)) + 1e-6)
+
+
 # ===================================================================
 # Training loop
 # ===================================================================
@@ -336,7 +356,8 @@ def train(real_graph=None, epochs=100, hidden=64, lr=3e-3, l2=1e-5,
         model.p = best_state
 
     val = evaluate(model, va, 0.5)
-    threshold, _ = best_threshold(val["y"], val["p"])
+    f1_threshold, _ = best_threshold(val["y"], val["p"])
+    threshold = calibrate_threshold(model, va, f1_threshold)
 
     val_final = evaluate(model, va, threshold)
     test_final = evaluate(model, te, threshold) if te else None
@@ -345,6 +366,7 @@ def train(real_graph=None, epochs=100, hidden=64, lr=3e-3, l2=1e-5,
         "in_dim": features.FEATURE_DIM,
         "hidden": hidden,
         "threshold": threshold,
+        "threshold_best_f1": f1_threshold,
         "pos_weight": pw,
         "feature_names": features.FEATURE_NAMES,
         "feature_mean": mean.tolist(),

@@ -51,6 +51,19 @@ DEDUP_WINDOW_NS = 2_000_000
 # next child.
 PARENT_WINDOW_NS = 60_000_000_000
 
+# Event timestamps are taken after the ring-buffer slot is reserved, so two
+# events on different CPUs can land a few microseconds out of order with no
+# tampering involved. Inversions smaller than this are not reported.
+TEMPORAL_TOLERANCE_NS = 100_000
+
+# Programs whose job is to run something as another user. Only these may link
+# a process to a parent with a different uid, or change the uid seen under one
+# pid. Names are cut to 15 characters to match the kernel's comm field.
+PRIVILEGE_HELPERS = frozenset({
+    "sudo", "sudoedit", "su", "doas", "pkexec", "runuser", "setpriv",
+    "newgrp", "sg", "login", "sshd", "sshd-session", "cron", "crond",
+})
+
 # ==========================================================
 # GNN  (detection/model.py, detection/detector.py)
 # ==========================================================

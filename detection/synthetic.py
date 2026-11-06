@@ -13,6 +13,12 @@ from detection import features
 # 1. Synthetic base-graph generation
 # ===================================================================
 
+SUDO = "/usr/bin/sudo"
+# Largest synthetic training graph. Degree features grow with graph size, and
+# false alarms rise on captures larger than this (33% at 800 events). Scoring
+# in chunks does not help: cutting the graph creates orphans, the model's
+# strongest tamper signal, so detector.py warns instead.
+TRAIN_MAX_EVENTS = 300
 SHELLS = ["bash", "sh", "zsh", "python3", "node", "make"]
 BINARIES = [
     "/usr/bin/ls", "/usr/bin/cat", "/usr/bin/grep", "/usr/bin/sed",
@@ -33,11 +39,16 @@ def _process_hash(pid, timestamp, comm) -> str:
 
 def generate(rng: random.Random | None = None,
              n_events: int | None = None,
-             uid: int | None = None) -> nx.DiGraph:
+             uid: int | None = None,
+             privileged: bool = False) -> nx.DiGraph:
     """Build one synthetic provenance graph: a branching execve tree with
     realistic burst behaviour - a shell spawns a few children, some of
     which are themselves shells that spawn more, with short bursts of
-    rapid execs separated by idle gaps."""
+    rapid execs separated by idle gaps.
+
+    `privileged` adds ordinary sudo use, whose children run as uid 0. Real
+    captures contain this, so the model must see it as normal in training or
+    it will flag every admin command as an anomaly."""
     rng = rng or random.Random()
     n_events = n_events or rng.randint(25, 70)
     uid = uid if uid is not None else rng.choice([1000, 1001, 1002])
@@ -52,8 +63,8 @@ def generate(rng: random.Random | None = None,
     ts = rng.randint(10 ** 12, 10 ** 13)
     seq = 0
 
-    # (node_id, comm-as-seen-by-children)
-    frontier: list[tuple[str, str]] = [(root, rng.choice(SHELLS))]
+    # (node_id, comm-as-seen-by-children, uid-of-children)
+    frontier: list[tuple[str, str, int]] = [(root, rng.choice(SHELLS), uid)]
 
     for _ in range(n_events):
         seq += 1
@@ -61,21 +72,25 @@ def generate(rng: random.Random | None = None,
         ts += rng.randint(200_000, 3_000_000) if rng.random() < 0.75 \
             else rng.randint(50_000_000, 900_000_000)
 
-        parent_node, parent_comm = rng.choice(frontier)
+        parent_node, parent_comm, event_uid = rng.choice(frontier)
         binary = rng.choice(BINARIES)
-        pid = rng.randint(1000, 60000)
+        if privileged and event_uid != 0 and rng.random() < 0.08:
+            binary = SUDO
+        # a separate range: real pids are unique, and a random collision
+        # across uids would read as a uid change under one pid
+        pid = rng.randint(60001, 65000) if event_uid == 0 else rng.randint(1000, 60000)
 
         node = f"P:{pid}:{seq}"
         G.add_node(node, type="process",
                    label=f"{binary.rsplit('/', 1)[-1]}\nPID {pid}",
-                   pid=pid, uid=uid, comm=parent_comm, filename=binary,
+                   pid=pid, uid=event_uid, comm=parent_comm, filename=binary,
                    timestamp=ts, sequence=seq,
                    process_hash=_process_hash(pid, ts, parent_comm),
                    synthetic_root=False)
 
         file_node = f"F:{binary}"
         G.add_node(file_node, type="file", label=binary.rsplit("/", 1)[-1],
-                   path=binary, pid=-1, uid=uid, comm="", filename=binary,
+                   path=binary, pid=-1, uid=event_uid, comm="", filename=binary,
                    timestamp=ts, sequence=seq, process_hash="",
                    synthetic_root=False)
 
@@ -84,8 +99,10 @@ def generate(rng: random.Random | None = None,
 
         # interpreters and shells become parents for later execs
         name = binary.rsplit("/", 1)[-1]
-        if name in SHELLS or rng.random() < 0.2:
-            frontier.append((node, name[:15]))
+        if binary == SUDO:
+            frontier.append((node, "sudo", 0))
+        elif name in SHELLS or rng.random() < 0.2:
+            frontier.append((node, name[:15], event_uid))
         if len(frontier) > 12:
             frontier.pop(rng.randrange(1, len(frontier)))
 
@@ -101,14 +118,6 @@ def windows(G: nx.DiGraph, size: int = 40, stride: int | None = None,
     Each window is a genuine subgraph of real data, which is what makes
     the trained model fit *this* host's behaviour rather than only the
     synthetic distribution.
-
-    NOTE: this walks edge attribute `seq` (set by generate()'s own edges
-    and by crypto/integrity.py's EDGE_SEALED_ATTRS). graph/service.py's
-    real builder currently stamps edges with `sequence` instead, not
-    `seq` - so on a real captured graph every edge's `seq` reads as 0 and
-    the whole graph collapses into a single window. That is a Phase 3 /
-    Phase 4 schema mismatch to fix in graph/service.py, not something
-    papered over here.
     """
     stride = stride or max(1, size // 2)
 
@@ -121,14 +130,14 @@ def windows(G: nx.DiGraph, size: int = 40, stride: int | None = None,
         chunk = set(seqs[start: start + size])
         if not chunk:
             break
-        edges = [(u, v) for u, v, d in G.edges(data=True)
-                 if int(d.get("seq") or 0) in chunk]
+        edges = {(u, v) for u, v, d in G.edges(data=True)
+                 if int(d.get("seq") or 0) in chunk}
         if len(edges) < min_edges:
             continue
         nodes = {n for e in edges for n in e}
         sub = G.subgraph(nodes).copy()
         sub.remove_edges_from(
-            [(u, v) for u, v in sub.edges() if (u, v) not in set(edges)]
+            [(u, v) for u, v in sub.edges() if (u, v) not in edges]
         )
         sub.remove_nodes_from([n for n in list(sub.nodes()) if sub.degree(n) == 0])
         if sub.number_of_edges() >= min_edges:
@@ -410,11 +419,20 @@ def build_base_graphs(real_graph=None, n_synthetic: int = 220,
     bases: list[tuple[str, object]] = []
 
     if real_graph is not None and real_graph.number_of_edges() > 0:
-        for w in windows(real_graph, size=window_size):
+        # stride == size: overlapping windows share events, and random
+        # splitting would put the same events in both train and test.
+        for w in windows(real_graph, size=window_size, stride=window_size):
             bases.append(("real", w))
+        # Also the whole capture: it is the size detection actually runs at.
+        bases.append(("real", real_graph))
 
+    # Up to 300 events, not generate()'s default 70. Degree features grow with
+    # graph size, so a model that has only seen small graphs reads an ordinary
+    # long capture as anomalous: it raised false alarms on 30% of clean
+    # synthetic graphs and on the real capture.
     for _ in range(n_synthetic):
-        bases.append(("synthetic", generate(rng)))
+        bases.append(("synthetic", generate(rng, n_events=rng.randint(25, TRAIN_MAX_EVENTS),
+                                            privileged=rng.random() < 0.3)))
 
     rng.shuffle(bases)
     return bases
@@ -455,9 +473,8 @@ def build_samples(bases, seed: int = 21, tamper_ratio: float = 0.5,
 
 
 def split(samples, train=0.7, val=0.15, seed: int = 5):
-    """Split at the BASE-graph level (already done by the time samples
-    exist) so a clean/tampered pair of the same window never crosses
-    train/val/test boundaries."""
+    """Each sample comes from its own base graph, and real windows do not
+    overlap (see build_base_graphs), so no event crosses a split."""
     rng = random.Random(seed)
     idx = list(range(len(samples)))
     rng.shuffle(idx)

@@ -8,15 +8,18 @@ import os
 import numpy as np
 
 from core import config
-from detection import features
+from detection import features, synthetic
 from detection.model import GraphSAGE
 
 
 SEVERITY = {
-    "sequence_gap": "medium",
+    # An unexplained gap is deletion, not a curiosity: capture loss and
+    # deduplication are both accounted for before this rule fires.
+    "sequence_gap": "high",
     "duplicate_sequence": "high",
     "temporal_inversion": "high",
     "causal_inversion": "high",
+    "edge_node_mismatch": "high",
     "process_hash_mismatch": "critical",
     "orphan_process": "low",
     "dangling_edge": "critical",
@@ -55,6 +58,10 @@ class RuleEngine:
     def _sequence_rules(self, G):
         out = []
         seqs = {}
+        # the graph builder merged these on purpose (graph/service.py)
+        deduplicated = {int(item) for item in
+                        str(G.graph.get("deduplicated_sequences") or "").split(",")
+                        if item}
         for u, w, d in G.edges(data=True):
             s = int(d.get("seq") or 0)
             if s <= 0:
@@ -75,7 +82,7 @@ class RuleEngine:
             if cur == prev + 1:
                 continue
             missing = set(range(prev + 1, cur))
-            unexplained = sorted(missing - self.known_missing)
+            unexplained = sorted(missing - self.known_missing - deduplicated)
             if unexplained:
                 out.append(_violation(
                     "sequence_gap", f"seq={prev}..{cur}",
@@ -94,7 +101,7 @@ class RuleEngine:
         prev_seq = prev_ts = None
         prev_edge = None
         for seq, ts, u, w in edges:
-            if prev_ts is not None and ts < prev_ts:
+            if prev_ts is not None and ts < prev_ts - config.TEMPORAL_TOLERANCE_NS:
                 out.append(_violation(
                     "temporal_inversion", f"{u} -> {w}",
                     f"sequence {seq} has timestamp {ts}, earlier than "
@@ -127,10 +134,23 @@ class RuleEngine:
             ct = int(G.nodes[w].get("timestamp") or 0)
             if G.nodes[u].get("synthetic_root"):
                 continue
-            if pt and ct and ct < pt:
+            if pt and ct and ct < pt - config.TEMPORAL_TOLERANCE_NS:
                 out.append(_violation(
                     "causal_inversion", f"{u} -> {w}",
                     f"child timestamp {ct} precedes parent timestamp {pt}"))
+
+        # A SPAWNS edge records the same exec as its child node, so the two
+        # must agree. Swapping sequence and time on edges alone, the "expert"
+        # reorder, passes every ordering check and fails this one.
+        for u, w, d in G.edges(data=True):
+            if d.get("relation") != "SPAWNS":
+                continue
+            child = G.nodes[w]
+            if (d.get("seq"), d.get("ts")) != (child.get("sequence"), child.get("timestamp")):
+                out.append(_violation(
+                    "edge_node_mismatch", f"{u} -> {w}",
+                    f"edge says seq {d.get('seq')} at {d.get('ts')}, child says "
+                    f"seq {child.get('sequence')} at {child.get('timestamp')}"))
         return out
 
     def _structural_rules(self, G):
@@ -171,8 +191,6 @@ class RuleEngine:
             if a.get("type") != "process" or a.get("synthetic_root"):
                 continue
             stored = a.get("process_hash")
-            if not stored:
-                continue
             expected = hashlib.sha256(
                 f"{a.get('pid')}:{a.get('timestamp')}:{a.get('comm')}".encode()
             ).hexdigest()
@@ -182,20 +200,37 @@ class RuleEngine:
                     "stored process_hash does not match its own pid/"
                     "timestamp/comm - the node was edited after capture"))
 
-        # a pid reused with conflicting uid inside one capture window
-        by_pid: dict[int, set] = {}
+        # Only the builder's session root may carry this flag, and it always
+        # has pid -1. On anything else the flag is an attempt to be skipped
+        # by the checks above.
+        for node, a in G.nodes(data=True):
+            if a.get("synthetic_root") and a.get("pid") != -1:
+                out.append(_violation(
+                    "attribute_conflict", node,
+                    "real process carries the session-root flag"))
+
+        # One pid changing uid is only legitimate straight after it ran a
+        # privilege helper. pkexec and su -c can exec in place, so a blanket
+        # "one pid, one uid" rule would call ordinary admin work tampering.
+        by_pid: dict[int, list] = {}
         for node, a in G.nodes(data=True):
             if a.get("type") != "process" or a.get("synthetic_root"):
                 continue
             pid = a.get("pid")
             if pid in (None, -1):
                 continue
-            by_pid.setdefault(pid, set()).add(a.get("uid"))
-        for pid, uids in by_pid.items():
-            if len(uids) > 1:
-                out.append(_violation(
-                    "attribute_conflict", f"pid={pid}",
-                    f"same pid appears under conflicting uids {sorted(uids)}"))
+            by_pid.setdefault(pid, []).append(a)
+        for pid, events in by_pid.items():
+            events.sort(key=lambda a: int(a.get("sequence") or 0))
+            for earlier, later in zip(events, events[1:]):
+                image = os.path.basename(earlier.get("filename") or "")[:15]
+                if later.get("uid") != earlier.get("uid") \
+                        and image not in config.PRIVILEGE_HELPERS:
+                    out.append(_violation(
+                        "attribute_conflict", f"pid={pid}",
+                        f"pid changes uid from {earlier.get('uid')} to "
+                        f"{later.get('uid')} without a privilege helper"))
+                    break
         return out
 
 
@@ -225,6 +260,10 @@ class PoisoningDetector:
         path = model_path or config.MODEL_PATH
         if os.path.exists(path):
             self.model, self.meta = GraphSAGE.load(path)
+            if self.meta.get("feature_names") != features.FEATURE_NAMES:
+                raise ValueError(
+                    f"{path} was trained on different features; retrain it: "
+                    f"python main.py train")
         elif require_model:
             raise FileNotFoundError(
                 f"no trained model at {path} - run: python -m detection.model"
@@ -271,11 +310,19 @@ class PoisoningDetector:
         elif gnn_says:
             confidence = float(np.mean([s for _, s in flagged]))
         else:
-            confidence = float(max([s for _, s in flagged], default=0.0))
+            # A clean verdict states no confidence in tampering. One flagged
+            # node is listed below with its own score.
+            confidence = 0.0
+
+        events = sum(1 for _, a in G.nodes(data=True)
+                     if a.get("type") == "process" and not a.get("synthetic_root"))
 
         report = {
             "run_id": run_id,
             "created_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            # A rule hit is proof. The model's score is only a suspicion.
+            "verdict": ("TAMPERED" if rules_say
+                        else "SUSPICIOUS" if gnn_says else "CLEAN"),
             "tampered": bool(rules_say or gnn_says),
             "confidence": round(confidence, 4),
             "verdict_source": (
@@ -291,6 +338,9 @@ class PoisoningDetector:
             "detail": {
                 "model_loaded": self.model is not None,
                 "threshold": thr,
+                "events": events,
+                "larger_than_training": (self.model is not None
+                                         and events > synthetic.TRAIN_MAX_EVENTS),
                 "rule_summary": summarise(violations),
                 "violations": violations[:200],
                 "top_suspicious_nodes": [
@@ -311,8 +361,7 @@ def format_report(report: dict) -> str:
         "=" * 62,
         f"  graph            : {report['graph_nodes']} nodes, "
         f"{report['graph_edges']} relations",
-        f"  verdict          : "
-        f"{'TAMPERED' if report['tampered'] else 'CLEAN'} "
+        f"  verdict          : {report['verdict']} "
         f"({report['verdict_source']})",
         f"  confidence       : {report['confidence']}",
         f"  rule violations  : {report['rule_violation_count']}",
@@ -326,6 +375,19 @@ def format_report(report: dict) -> str:
         lines.append("  rule violations by type:")
         for rule, count in sorted(by_rule.items(), key=lambda kv: -kv[1]):
             lines.append(f"    {rule:<24} {count}")
+
+    if report["verdict_source"] == "gnn":
+        lines.append("-" * 62)
+        lines.append("  GNN only: a statistical suspicion, not proof. No rule was")
+        lines.append("  broken. Confirm with: python main.py verify")
+
+    if report["detail"]["larger_than_training"]:
+        lines.append("-" * 62)
+        lines.append(f"  This capture has {report['detail']['events']} events; the model "
+                     f"trained on at")
+        lines.append(f"  most {synthetic.TRAIN_MAX_EVENTS}, so its false alarms are "
+                     f"likely here. Rules and the")
+        lines.append("  seal are not affected by capture size.")
 
     top = report["detail"]["top_suspicious_nodes"]
     if top:

@@ -95,7 +95,8 @@ def extract(G) -> tuple[np.ndarray, list[str]]:
     seq_max = max(all_seq) or 1
     seq_pos = {s: i for i, s in enumerate(all_seq)}
 
-    uids = [int(G.nodes[x].get("uid") or -1) for x in nodes]
+    # `or -1` would turn uid 0 (root) into "no uid"
+    uids = [int(-1 if G.nodes[x].get("uid") is None else G.nodes[x]["uid"]) for x in nodes]
     majority_uid = max(set(uids), key=uids.count) if uids else -1
 
     seq_counts: dict[int, int] = {}
@@ -221,7 +222,7 @@ def extract(G) -> tuple[np.ndarray, list[str]]:
 
         row += [
             hash_ok,
-            1.0 if int(a.get("uid") or -1) == majority_uid else 0.0,
+            1.0 if int(-1 if a.get("uid") is None else a["uid"]) == majority_uid else 0.0,
             float(np.clip((a.get("pid") or 0) / 65536.0, 0, 1)),
             1.0 if seq_counts.get(seq, 0) > 2 else 0.0,
             1.0 if G.has_edge(node, node) else 0.0,
