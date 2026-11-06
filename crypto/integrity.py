@@ -28,8 +28,17 @@ from core import config
 from core.store import get_store
 
 GENESIS = "0" * 64
-NODE_SEALED_ATTRS = ("type", "pid", "uid", "comm", "filename", "path", "timestamp", "sequence", "process_hash")
-EDGE_SEALED_ATTRS = ("relation", "seq", "ts")
+NODE_SEALED_ATTRS_V1 = ("type", "pid", "uid", "comm", "filename", "path", "timestamp", "sequence", "process_hash")
+EDGE_SEALED_ATTRS_V1 = ("relation", "seq", "ts")
+# Format 2 also seals `synthetic_root` and the edge's `method`. Format 1 left
+# them outside the hash, so flipping synthetic_root on a real process exempted
+# it from every detection rule without breaking the seal.
+NODE_SEALED_ATTRS = NODE_SEALED_ATTRS_V1 + ("synthetic_root",)
+EDGE_SEALED_ATTRS = EDGE_SEALED_ATTRS_V1 + ("method",)
+SEAL_FORMAT = 2
+# Absent on format-1 records; dropped when None so those records still hash
+# exactly as they did when they were signed.
+_OPTIONAL_RECORD_FIELDS = ("seal_format", "total_partitions")
 _ML_DSA_PARAMS = {"ML-DSA-44": "ML_DSA_44", "ML-DSA-65": "ML_DSA_65", "ML-DSA-87": "ML_DSA_87"}
 
 
@@ -41,20 +50,34 @@ def sha256(value: bytes) -> bytes:
     return hashlib.sha256(value).digest()
 
 
-def _node_record(graph, node: Any) -> dict[str, Any]:
-    return {"id": str(node), **{key: graph.nodes[node].get(key) for key in NODE_SEALED_ATTRS}}
+class KeyStoreLocked(ValueError):
+    """The key store exists but this passphrase does not open it."""
 
 
-def leaf_hash(graph, source: Any, target: Any) -> bytes:
-    record = {"src": _node_record(graph, source), "dst": _node_record(graph, target),
-              "edge": {key: graph.edges[source, target].get(key) for key in EDGE_SEALED_ATTRS}}
-    return sha256(b"\x00QG-LEAF\x00" + canonical_json(record))
+class SealedRunExists(ValueError):
+    """Refusal to overwrite evidence that has already been sealed."""
+
+
+def _node_record(graph, node: Any, attrs: tuple[str, ...]) -> dict[str, Any]:
+    return {"id": str(node), **{key: graph.nodes[node].get(key) for key in attrs}}
+
+
+def leaf_hash(graph, source: Any, target: Any, seal_format: int = SEAL_FORMAT) -> bytes:
+    legacy = seal_format == 1
+    node_attrs = NODE_SEALED_ATTRS_V1 if legacy else NODE_SEALED_ATTRS
+    edge_attrs = EDGE_SEALED_ATTRS_V1 if legacy else EDGE_SEALED_ATTRS
+    record = {"src": _node_record(graph, source, node_attrs), "dst": _node_record(graph, target, node_attrs),
+              "edge": {key: graph.edges[source, target].get(key) for key in edge_attrs}}
+    domain = b"\x00QG-LEAF\x00" if legacy else b"\x00QG-LEAF-v2\x00"
+    return sha256(domain + canonical_json(record))
 
 
 def record_hash(record: dict[str, Any]) -> str:
     excluded = {"record_hash", "ed25519_signature", "mldsa_signature", "ed25519_public_key",
                 "mldsa_public_key", "mldsa_algorithm", "created_at", "leaf_hashes"}
-    return sha256(b"\x00QG-RECORD\x00" + canonical_json({k: v for k, v in record.items() if k not in excluded})).hex()
+    payload = {k: v for k, v in record.items() if k not in excluded
+               and not (k in _OPTIONAL_RECORD_FIELDS and v is None)}
+    return sha256(b"\x00QG-RECORD\x00" + canonical_json(payload)).hex()
 
 
 def _merkle_leaf(value: bytes) -> bytes:
@@ -206,7 +229,12 @@ class KeyStore:
             ed_raw = aes.decrypt(base64.b64decode(blob["ed25519"]["nonce"]), base64.b64decode(blob["ed25519"]["ciphertext"]), b"QG-ED25519")
             pq_raw = aes.decrypt(base64.b64decode(blob["mldsa"]["nonce"]), base64.b64decode(blob["mldsa"]["ciphertext"]), b"QG-MLDSA")
         except Exception as exc:
-            raise ValueError("key store could not be unlocked") from exc
+            raise KeyStoreLocked(
+                f"key store could not be unlocked: {self.path}\n"
+                f"  It was created with a different passphrase than this shell is using.\n"
+                f"  Set the original one:  export QG_KEYSTORE_PASSPHRASE='...'\n"
+                f"  QG_KEYSTORE_PASSPHRASE is currently "
+                f"{'set' if os.getenv('QG_KEYSTORE_PASSPHRASE') else 'NOT set (using the built-in default)'}.") from exc
         self.ed_private, self.ed_public = Ed25519PrivateKey.from_private_bytes(ed_raw), Ed25519PrivateKey.from_private_bytes(ed_raw).public_key()
         self.mldsa = MLDSA(blob["mldsa"]["algorithm"])
         self.mldsa_public, self._mldsa_private = base64.b64decode(blob["mldsa"]["public_key"]), pq_raw
@@ -221,14 +249,29 @@ class KeyStore:
         blob = {"version": self.VERSION, "kdf": {"algorithm": "scrypt", "n": 2**15, "r": 8, "p": 1, "salt": b64(salt)},
                 "ed25519": {"algorithm": "Ed25519", "public_key": b64(self.ed_public_bytes()), "nonce": b64(n1), "ciphertext": b64(aes.encrypt(n1, ed_raw, b"QG-ED25519"))},
                 "mldsa": {"algorithm": self.mldsa.algorithm, "public_key": b64(self.mldsa_public), "nonce": b64(n2), "ciphertext": b64(aes.encrypt(n2, self._mldsa_private, b"QG-MLDSA"))}}
-        Path(self.path).write_text(json.dumps(blob, indent=2), encoding="utf-8")
-        os.chmod(self.path, 0o600)
+        # Written beside the target and swapped in, so a crash mid-write
+        # cannot destroy the only copy of the signing keys.
+        temporary = f"{self.path}.tmp"
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(blob, indent=2))
+        os.replace(temporary, self.path)
 
     def ed_public_bytes(self) -> bytes:
         return self.ed_public.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
 
     def mldsa_private_bytes(self) -> bytes:
         return self._mldsa_private
+
+    @staticmethod
+    def public_identity(path: str | None = None) -> dict[str, str] | None:
+        """The store's public keys, readable without the passphrase."""
+        location = Path(path or config.KEYSTORE)
+        if not location.exists():
+            return None
+        blob = json.loads(location.read_text(encoding="utf-8"))
+        return {"ed25519_public_key": base64.b64decode(blob["ed25519"]["public_key"]).hex(),
+                "mldsa_public_key": base64.b64decode(blob["mldsa"]["public_key"]).hex()}
 
     def summary(self) -> dict[str, Any]:
         return {"path": self.path, "ed25519_public_key": self.ed_public_bytes().hex(), "mldsa_algorithm": self.mldsa.algorithm, "mldsa_backend": self.mldsa.backend}
@@ -252,8 +295,21 @@ class DualSigner:
 
 
 class DualVerifier:
-    def __init__(self, expected_ed_public_key: str | None = None):
+    """Strict-AND hybrid verification.
+
+    A record carries its own public keys, so without pinning a valid
+    signature only proves that *somebody* signed it - an attacker can rewrite
+    the evidence and re-sign it with a fresh key pair. Pin both keys: pinning
+    Ed25519 alone would let a quantum attacker forge it and bring their own
+    ML-DSA key, which is the exact case the hybrid scheme exists to stop.
+    """
+    def __init__(self, expected_ed_public_key: str | None = None, expected_mldsa_public_key: str | None = None):
         self.expected = expected_ed_public_key
+        self.expected_mldsa = expected_mldsa_public_key
+
+    @property
+    def pinned(self) -> bool:
+        return bool(self.expected and self.expected_mldsa)
 
     def verify(self, payload: str, record: dict[str, Any]) -> dict[str, Any]:
         result = {"ed25519_ok": False, "mldsa_ok": False, "key_trusted": True, "ok": False, "reason": None}
@@ -261,7 +317,8 @@ class DualVerifier:
             ed_public = bytes.fromhex(record["ed25519_public_key"])
             pq_public = bytes.fromhex(record["mldsa_public_key"])
             algorithm = record["mldsa_algorithm"]
-            if self.expected and self.expected != record["ed25519_public_key"]:
+            if (self.expected and self.expected != record["ed25519_public_key"]) or \
+                    (self.expected_mldsa and self.expected_mldsa != record["mldsa_public_key"]):
                 result.update(key_trusted=False, reason="signed by an unexpected key")
                 return result
             message = _signing_message(payload, ed_public, algorithm, pq_public)
@@ -271,7 +328,7 @@ class DualVerifier:
             result["ok"] = result["ed25519_ok"] and result["mldsa_ok"]
             if not result["ok"]:
                 result["reason"] = "ML-DSA signature invalid"
-        except (KeyError, ValueError, InvalidSignature) as exc:
+        except (KeyError, ValueError, TypeError, AttributeError, InvalidSignature) as exc:
             result["reason"] = f"malformed or invalid signature: {exc}"
         return result
 
@@ -287,10 +344,15 @@ class IntegrityService:
         if not parts:
             raise ValueError("graph has no relations to seal")
         previous, records, run_id = GENESIS, [], run_id or str(uuid.uuid4())
+        # Sealed evidence is immutable. Overwriting a run would also leave any
+        # higher-numbered partitions from the old seal behind.
+        if persist and self.store.load_partitions(run_id):
+            raise SealedRunExists(f"run {run_id} is already sealed; seal under a new --run-id")
         for part in parts:
             leaves = [_merkle_leaf(leaf_hash(graph, u, v)) for u, v in part["edges"]]
             record = {"run_id": run_id, "partition_index": part["index"], "seq_start": part["seq_start"], "seq_end": part["seq_end"],
-                      "leaf_count": len(leaves), "merkle_root": MerkleTree(leaves).root_hex, "prev_record_hash": previous, "risk_tier_hint": risk_tier_hint}
+                      "leaf_count": len(leaves), "merkle_root": MerkleTree(leaves).root_hex, "prev_record_hash": previous, "risk_tier_hint": risk_tier_hint,
+                      "seal_format": SEAL_FORMAT, "total_partitions": len(parts)}
             record["record_hash"] = record_hash(record)
             record.update(self.signer.sign(record["record_hash"]))
             record["leaf_hashes"], record["created_at"] = [leaf.hex() for leaf in leaves], dt.datetime.now(dt.timezone.utc).isoformat()
@@ -301,8 +363,8 @@ class IntegrityService:
         return records
 
     def inclusion_proof(self, graph, source: Any, target: Any, records: list[dict[str, Any]] | None = None, run_id: str | None = None):
-        target_hash = _merkle_leaf(leaf_hash(graph, source, target)).hex()
         for record in records or self.store.load_partitions(run_id):
+            target_hash = _merkle_leaf(leaf_hash(graph, source, target, record.get("seal_format") or 1)).hex()
             leaves = record.get("leaf_hashes", [])
             if target_hash in leaves:
                 index, tree = leaves.index(target_hash), MerkleTree([bytes.fromhex(item) for item in leaves])
@@ -321,20 +383,24 @@ class VerificationReport:
 
 
 class EvidenceVerifier:
-    def __init__(self, store=None, expected_ed_public_key: str | None = None):
-        self.store, self.dual = store or get_store(), DualVerifier(expected_ed_public_key)
+    def __init__(self, store=None, expected_ed_public_key: str | None = None, expected_mldsa_public_key: str | None = None):
+        self.store, self.dual = store or get_store(), DualVerifier(expected_ed_public_key, expected_mldsa_public_key)
 
     def verify(self, graph=None, run_id: str | None = None, records: list[dict[str, Any]] | None = None, partition_size: int | None = None) -> VerificationReport:
         report, records = VerificationReport(), records if records is not None else self.store.load_partitions(run_id)
         if not records:
             report.errors.append("no sealed partitions found for this run")
             return report
-        live = None if graph is None else {_merkle_leaf(leaf_hash(graph, u, v)).hex(): f"{u} -> {v}" for u, v in ordered_edges(graph)}
+        seal_format = max(record.get("seal_format") or 1 for record in records)
+        live = None if graph is None else {_merkle_leaf(leaf_hash(graph, u, v, seal_format)).hex(): f"{u} -> {v}" for u, v in ordered_edges(graph)}
         previous = GENESIS
         for expected, record in enumerate(sorted(records, key=lambda item: item["partition_index"])):
             leaves = record.get("leaf_hashes", [])
             try: root_ok = MerkleTree([bytes.fromhex(item) for item in leaves]).root_hex == record.get("merkle_root")
             except ValueError: root_ok = False
+            # The tree pads odd layers by repeating the last node, so [a,b,c]
+            # and [a,b,c,c] share a root. The signed leaf_count tells them apart.
+            root_ok = root_ok and len(leaves) == record.get("leaf_count")
             signature = self.dual.verify(record.get("record_hash", ""), record)
             entry = {"partition_index": record["partition_index"], "seq_start": record["seq_start"], "seq_end": record["seq_end"], "signature_ok": signature["ok"], "record_hash_ok": record_hash(record) == record.get("record_hash"), "chain_ok": record["partition_index"] == expected and record.get("prev_record_hash") == previous, "merkle_ok": root_ok if live is None else root_ok and set(leaves).issubset(live), "tampered_leaves": []}
             if live is not None:
@@ -343,6 +409,11 @@ class EvidenceVerifier:
             report.partitions.append(entry)
             report.errors.extend(f"partition {record['partition_index']}: {flag} failed" for flag, passed in entry.items() if flag.endswith("_ok") and not passed)
             previous = record.get("record_hash", "")
+        # A hash chain has no head: removing the newest partitions leaves a
+        # valid shorter chain. The signed total is what exposes that.
+        declared = {record["total_partitions"] for record in records if record.get("total_partitions") is not None}
+        if declared and declared != {len(records)}:
+            report.errors.append(f"run truncated or mixed: {len(records)} partition(s) present, sealed count says {sorted(declared)}")
         if live is not None:
             sealed = {item for record in records for item in record.get("leaf_hashes", [])}
             report.inserted = sorted(name for value, name in live.items() if value not in sealed)
@@ -353,6 +424,12 @@ class EvidenceVerifier:
         path_ok = verify_proof(bytes.fromhex(proof["leaf"]), proof["path"], bytes.fromhex(proof["merkle_root"]))
         signature = self.dual.verify(proof["record_hash"], proof)
         return {"path_ok": path_ok, "signature_ok": signature["ok"], "ok": path_ok and signature["ok"], "signature_detail": signature}
+
+
+def load_trust_file(path: str | Path) -> dict[str, str]:
+    """Read pinned public keys exported by `main.py keys --export-trust`."""
+    trust = json.loads(Path(path).read_text(encoding="utf-8"))
+    return {"ed25519_public_key": trust["ed25519_public_key"], "mldsa_public_key": trust["mldsa_public_key"]}
 
 
 def export_evidence(records: list[dict[str, Any]], path: str | Path) -> Path:

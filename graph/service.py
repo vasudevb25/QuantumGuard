@@ -52,6 +52,9 @@ class ProvenanceGraphService:
     def __init__(self, store=None):
         self.store = store or get_store()
         self.dropped: list[dict] = []
+        self.deduplicated: list[int] = []
+        self.anomalies: list[dict] = []
+        self.rebased_at: list[int] = []
         self.session_roots: dict[int, str] = {}
 
     # =====================================================
@@ -80,11 +83,18 @@ class ProvenanceGraphService:
     def deduplicate(self, events: list[ProvenanceEvent]) -> list[ProvenanceEvent]:
         cache: dict[tuple, int] = {}
         cleaned = []
+        self.deduplicated.clear()
 
         for e in events:
             key = (e.pid, e.filename)
 
-            if key in cache and e.timestamp - cache[key] < config.DEDUP_WINDOW_NS:
+            # The lower bound matters: after a reboot the clock restarts, the
+            # difference goes negative, and without it every pid/file pair
+            # seen before the reboot would count as a duplicate.
+            if key in cache and 0 <= e.timestamp - cache[key] < config.DEDUP_WINDOW_NS:
+                # Remembered so rule R7 does not report the sequence number
+                # this leaves behind as deletion.
+                self.deduplicated.append(e.sequence)
                 continue
 
             cache[key] = e.timestamp
@@ -96,20 +106,46 @@ class ProvenanceGraphService:
     # TEMPORAL VALIDATION
     # =====================================================
 
+    def _session_boundaries(self) -> set[int]:
+        loader = getattr(self.store, "load_session_boundaries", None)
+        return set(loader()) if loader else set()
+
     def validate(self, events: list[ProvenanceEvent]) -> list[ProvenanceEvent]:
+        """Normalise ordering without destroying evidence.
+
+        A backwards timestamp is one of two things:
+
+          * the first event of a resumed session. Older captures stored
+            nanoseconds since boot, which restart at zero after a reboot.
+            These are rebased so the graph's time keeps moving forward.
+          * anything else. It is kept, unmodified, for rule R2 to report.
+            Dropping it here would erase the evidence of tampering before
+            the detector could see it.
+        """
         valid = []
         previous_seq = 0
         previous_ts = 0
+        offset = 0
+        boundaries = self._session_boundaries()
         self.dropped.clear()
+        self.anomalies.clear()
+        self.rebased_at.clear()
 
         for e in events:
             if e.sequence <= previous_seq:
                 self.dropped.append({"sequence": e.sequence, "reason": "sequence_order"})
                 continue
 
+            e.timestamp += offset
             if e.timestamp < previous_ts:
-                self.dropped.append({"sequence": e.sequence, "reason": "timestamp_order"})
-                continue
+                # any(): the boundary event itself may have been deduplicated
+                if any(previous_seq < b <= e.sequence for b in boundaries):
+                    shift = previous_ts + 1_000_000_000 - e.timestamp
+                    offset += shift
+                    e.timestamp += shift
+                    self.rebased_at.append(e.sequence)
+                else:
+                    self.anomalies.append({"sequence": e.sequence, "reason": "timestamp_order"})
 
             valid.append(e)
             previous_seq = e.sequence
@@ -134,11 +170,14 @@ class ProvenanceGraphService:
         means "something called bash exec'd ls", so it is linked to the
         most recent earlier event, same uid, whose executed binary's
         basename equals this event's comm (truncated to 15 chars, since
-        TASK_COMM_LEN is 16 bytes including the NUL). Events with no
-        match attach to a per-uid session root instead of being
+        TASK_COMM_LEN is 16 bytes including the NUL). A child of a privilege
+        helper may have a different uid: sudo runs as the user and its child
+        as root, and that link is the one an investigator most needs. Events
+        with no match attach to a per-uid session root instead of being
         orphaned."""
 
         image_index: dict[tuple[int, str], tuple[str, int, int]] = {}
+        helper_index: dict[str, tuple[str, int, int]] = {}
         roots: dict[int, str] = {}
 
         for e in events:
@@ -148,6 +187,9 @@ class ProvenanceGraphService:
             ).hexdigest()
 
             parent = image_index.get((e.uid, e.comm))
+            helper = helper_index.get(e.comm)
+            if helper and (not parent or helper[2] > parent[2]):
+                parent = helper
 
             if parent and (e.timestamp - parent[2]) <= config.PARENT_WINDOW_NS:
                 e.parent_node = parent[0]
@@ -160,6 +202,8 @@ class ProvenanceGraphService:
 
             image = os.path.basename(e.filename)[:15]
             image_index[(e.uid, image)] = (e.process_id, e.pid, e.timestamp)
+            if image in config.PRIVILEGE_HELPERS:
+                helper_index[image] = image_index[(e.uid, image)]
 
         self.session_roots = roots
         return events
@@ -245,6 +289,10 @@ class ProvenanceGraphService:
         G.graph["builder"] = "QuantumGuard Phase 3"
         G.graph["event_count"] = len(events)
         G.graph["dropped_count"] = len(self.dropped)
+        # Comma-joined because GraphML cannot store lists.
+        G.graph["deduplicated_sequences"] = ",".join(map(str, self.deduplicated))
+        G.graph["timestamp_rebased_at"] = ",".join(map(str, self.rebased_at))
+        G.graph["timestamp_anomalies"] = len(self.anomalies)
 
         return G
 

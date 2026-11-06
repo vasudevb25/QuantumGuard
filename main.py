@@ -2,12 +2,15 @@
 
     python main.py capture      Phase 1   eBPF capture with CCA
     python main.py graph        Phase 2/3 normalise and build the graph
+    python main.py visualize              readable picture of the graph
     python main.py train        Phase 4   train the GraphSAGE detector
     python main.py detect       Phase 4   rule + GNN poisoning detection
     python main.py seal         Phase 5   Merkle partitions, dual signing
     python main.py anchor       Phase 6   risk scoring and tiered anchoring
     python main.py evaluate     Phase 7   forensic survivability
     python main.py verify                 verify everything independently
+    python main.py tamper apply           write a tampered copy of the graph
+    python main.py tamper test            attack every layer and score it
     python main.py all                    the whole pipeline, in order
     python main.py demo                   offline end-to-end demonstration
 """
@@ -98,6 +101,11 @@ def graph(args):
     return result
 
 
+def visualize(args):
+    from graph.visualize import main as draw_graph
+    draw_graph(args.graph, args.output, args.max_programs)
+
+
 def train(args):
     from detection.model import main as train_model
     import sys
@@ -177,13 +185,22 @@ def anchor(args):
     report_path = Path(config.EVIDENCE_DIR) / "detection_report.json"
     if report_path.exists():
         report = json.loads(report_path.read_text(encoding="utf-8"))
+        # Risk computed from another graph's verdict would be meaningless.
+        if (report.get("graph_nodes"), report.get("graph_edges")) != (
+                graph_data.number_of_nodes(), graph_data.number_of_edges()):
+            print("note: detection_report.json describes a different graph; "
+                  "ignoring it. Run 'python main.py detect' first.\n")
+            report = None
 
     service = AnchoringService(ledger=get_ledger(args.ledger),
                                batch_size=args.batch_size)
+    # The size the run was actually sealed with, not whatever this command
+    # was given, or edges get attributed to the wrong partitions.
+    partitions = partition_graph(graph_data, records[0]["leaf_count"])
     result = service.anchor_run(
-        records, graph=graph_data,
-        partitions=partition_graph(graph_data, args.partition_size),
-        report=report)
+        records, graph=graph_data, partitions=partitions, report=report,
+        tamper_alert_indices=service.alerted_partitions(
+            records, graph_data, report, partitions))
 
     print(format_report(result))
     checks = service.verify_run(result)
@@ -216,23 +233,52 @@ def verify(args):
     from crypto.integrity import EvidenceVerifier
     from core.store import get_store
 
+    from crypto.integrity import DualVerifier, KeyStore, load_trust_file
+
     graph_data = None if args.no_graph else _load_graph(args.graph)
     store = get_store()
 
     if not args.run_id:
-        runs = {record.get("run_id") for record in store.load_partitions()}
-        if len(runs) > 1:
-            print(f"note: {len(runs)} sealed runs are stored and no --run-id "
-                  f"was given, so all of them are checked against the current "
-                  f"graph. An older run sealed a different graph and will "
-                  f"report as altered. Pass --run-id to check one run.\n")
+        args.run_id = _latest_run_id(store)
+        if args.run_id:
+            print(f"no --run-id given; verifying the latest sealed run "
+                  f"{args.run_id}\n")
 
-    report = EvidenceVerifier(store=store).verify(
+    # Records carry their own public keys, so the expected signer has to come
+    # from somewhere else, or re-signed evidence verifies.
+    trust = load_trust_file(args.trust_file) if args.trust_file \
+        else KeyStore.public_identity()
+    if trust:
+        print(f"signer pinned to {trust['ed25519_public_key'][:16]}... "
+              f"({'trust file' if args.trust_file else 'local key store'})")
+        if not args.trust_file:
+            print("  a root attacker can replace the local key store too; "
+                  "use --trust-file with a copy kept off this host\n")
+    else:
+        print("WARNING: no key store or --trust-file: the signer is not "
+              "pinned, so re-signed evidence would verify\n")
+    pins = (trust["ed25519_public_key"], trust["mldsa_public_key"]) if trust \
+        else (None, None)
+    pinned = DualVerifier(*pins)
+
+    report = EvidenceVerifier(store, *pins).verify(
         graph_data, run_id=args.run_id,
         partition_size=args.partition_size)
     print(report)
 
     ok = report.ok
+
+    # the check anchoring exists for: does the ledger agree with the evidence?
+    records = store.load_partitions(args.run_id) if args.run_id else []
+    if records:
+        from anchoring.service import AnchoringService
+        from anchoring.ledger import get_ledger
+        problems = AnchoringService(
+            ledger=get_ledger(args.ledger)).cross_check(records)
+        print(f"\nEvidence vs ledger: {'PASS' if not problems else 'FAIL'}")
+        for problem in problems[:5]:
+            print(f"  {problem}")
+        ok = ok and not problems
 
     # anchors, if a Phase 6 report exists
     anchor_path = Path(config.ANCHOR_REPORT)
@@ -240,7 +286,11 @@ def verify(args):
         from anchoring.service import AnchoringService
         from anchoring.ledger import get_ledger
         result = json.loads(anchor_path.read_text(encoding="utf-8"))
-        checks = AnchoringService(ledger=get_ledger(args.ledger)).verify_run(result)
+        if args.run_id and result.get("run_id") != args.run_id:
+            print(f"\nnote: {anchor_path} describes run {result.get('run_id')}; "
+                  f"its partitions are not this run's")
+        checks = AnchoringService(ledger=get_ledger(args.ledger)).verify_run(
+            result, pinned)
         print(f"\nAnchors: {'PASS' if checks['ok'] else 'FAIL'}  "
               f"({checks['externally_anchored']} externally anchored, "
               f"{checks['local_only']} local-only, "
@@ -254,7 +304,7 @@ def verify(args):
     certificates = sorted(Path(config.EVIDENCE_DIR).glob("completeness_*.json"))
     for path in certificates:
         result = verify_certificate(
-            json.loads(path.read_text(encoding="utf-8")))
+            json.loads(path.read_text(encoding="utf-8")), pinned)
         print(f"\nCompleteness {path.name}: "
               f"{'PASS' if result['ok'] else 'FAIL'}  "
               f"range {result['range'][0]}-{result['range'][1]}, "
@@ -310,8 +360,8 @@ def demo(args):
     from anchoring.ledger import LocalLedger
     from anchoring.service import AnchoringService, format_report as anchor_report
     from core.store import FileStore
-    from crypto.integrity import (EvidenceVerifier, IntegrityService,
-                                  KeyStore, partition_graph)
+    from crypto.integrity import (DualSigner, EvidenceVerifier,
+                                  IntegrityService, KeyStore, partition_graph)
     from detection.detector import PoisoningDetector, format_report
     from detection.synthetic import TamperGenerator, generate
     from evaluation.main import evaluate as survivability
@@ -322,7 +372,9 @@ def demo(args):
     try:
         store = FileStore(workspace / "evidence")
         keystore = KeyStore(str(workspace / "keys.json"), "demo").create()
-        ledger = LocalLedger(workspace / "ledger.json")
+        # Signs with the throwaway key: the demo must not touch keys/.
+        ledger = LocalLedger(workspace / "ledger.json",
+                             signer=DualSigner(keystore))
 
         print("\n[1/6] building a provenance graph")
         clean = generate(rng, n_events=args.events)
@@ -363,10 +415,12 @@ def demo(args):
         print("     ", verifier.verify(tampered, records=records))
 
         print("\n      the same evidence, now anchored by risk:")
+        tampered_partitions = partition_graph(tampered, args.partition_size)
         tampered_anchor = anchoring.anchor_run(
             records, graph=tampered, report=tamper_report,
-            partitions=partition_graph(tampered, args.partition_size),
-            tamper_alert_indices={0} if tamper_report["tampered"] else set(),
+            partitions=tampered_partitions,
+            tamper_alert_indices=anchoring.alerted_partitions(
+                records, tampered, tamper_report, tampered_partitions),
             persist=False)
         print(anchor_report(tampered_anchor))
 
@@ -383,7 +437,32 @@ def demo(args):
 
 def keys(args):
     from crypto.integrity import KeyStore
-    print(json.dumps(KeyStore().load_or_create().summary(), indent=2))
+    store = KeyStore().load_or_create()
+    print(json.dumps(store.summary(), indent=2))
+    if args.export_trust:
+        output = Path(args.export_trust)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(KeyStore.public_identity(store.path),
+                                     indent=2) + "\n", encoding="utf-8")
+        print(f"Public keys written to {output}. Keep a copy off this host "
+              f"and pass it to: python main.py verify --trust-file {output}")
+
+
+def tamper(args):
+    """Attack the system and measure which layer notices."""
+    from evaluation import tamper as module
+    if args.action == "apply":
+        module.apply_command(args, _load_graph(args.graph))
+        return
+    graph_path = Path(args.graph or config.GRAPH_PICKLE)
+    real = _load_graph(str(graph_path)) if graph_path.exists() else None
+    results = module.run_all(real, trials=args.trials,
+                             intensity=args.intensity, seed=args.seed,
+                             model_path=args.model)
+    print(module.format_report(results))
+    print(f"Report: {module.save_report(results, args.output)}")
+    if results["evidence_attacks_missed"]:
+        raise SystemExit(2)
 
 
 # ======================================================================
@@ -400,9 +479,18 @@ def main(argv: list[str] | None = None) -> int:
                                      parents=[common])
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("keys", parents=[common]).set_defaults(func=keys)
+    node = sub.add_parser("keys", parents=[common])
+    node.add_argument("--export-trust", default=None, metavar="PATH",
+                      help="write the public keys for verify --trust-file")
+    node.set_defaults(func=keys)
     sub.add_parser("capture", parents=[common]).set_defaults(func=capture)
     sub.add_parser("graph", parents=[common]).set_defaults(func=graph)
+
+    node = sub.add_parser("visualize", parents=[common],
+                          help="draw what ran what, one box per program")
+    node.add_argument("--output", default=None)
+    node.add_argument("--max-programs", type=int, default=24)
+    node.set_defaults(func=visualize)
 
     node = sub.add_parser("train", parents=[common])
     node.add_argument("--epochs", type=int, default=40)
@@ -427,7 +515,7 @@ def main(argv: list[str] | None = None) -> int:
     node = sub.add_parser("evaluate", parents=[common])
     node.add_argument("--ratio", type=float, default=0.15)
     node.add_argument("--mode", default="edge",
-                      choices=["edge", "node", "window", "insert", "mixed"])
+                      choices=["edge", "node", "window", "insert", "mixed", "edit"])
     node.add_argument("--seed", type=int, default=42)
     node.add_argument("--output", default=config.EVALUATION_REPORT)
     node.set_defaults(func=evaluate)
@@ -435,6 +523,8 @@ def main(argv: list[str] | None = None) -> int:
     node = sub.add_parser("verify", parents=[common])
     node.add_argument("--no-graph", action="store_true",
                       help="check signatures and chain only")
+    node.add_argument("--trust-file", default=None,
+                      help="public keys from 'keys --export-trust'")
     node.add_argument("--ledger", default=config.LEDGER_BACKEND,
                       choices=["local", "fabric"])
     node.set_defaults(func=verify)
@@ -450,9 +540,22 @@ def main(argv: list[str] | None = None) -> int:
     node.add_argument("--batch-size", type=int, default=config.ANCHOR_BATCH_SIZE)
     node.add_argument("--ratio", type=float, default=0.15)
     node.add_argument("--mode", default="edge",
-                      choices=["edge", "node", "window", "insert", "mixed"])
+                      choices=["edge", "node", "window", "insert", "mixed", "edit"])
     node.add_argument("--seed", type=int, default=42)
     node.set_defaults(func=all_steps)
+
+    node = sub.add_parser("tamper", parents=[common],
+                          help="attack a copy of the evidence and score detection")
+    node.add_argument("action", choices=["apply", "test"])
+    node.add_argument("--attack", default="adaptive_forgery",
+                      help="attack name for 'apply' (see evaluation/tamper.py)")
+    node.add_argument("--intensity", type=float, default=0.1)
+    node.add_argument("--seed", type=int, default=7)
+    node.add_argument("--trials", type=int, default=20,
+                      help="synthetic graphs per attack for 'test'")
+    node.add_argument("--model", default=None, help="model to test")
+    node.add_argument("--output", default=None)
+    node.set_defaults(func=tamper)
 
     node = sub.add_parser("demo", parents=[common])
     node.add_argument("--events", type=int, default=120)
@@ -471,11 +574,16 @@ def main(argv: list[str] | None = None) -> int:
         if getattr(args, field) == default and getattr(pre, field) != default:
             setattr(args, field, getattr(pre, field))
 
+    from core.store import SchemaOutdated
+    from crypto.integrity import KeyStoreLocked, SealedRunExists
+
     try:
         args.func(args)
     except NotImplementedError as exc:
         # An adapter declining to fake a result is an expected outcome,
         # not a crash. Report it as a message rather than a traceback.
+        raise SystemExit(f"\n{exc}\n")
+    except (KeyStoreLocked, SealedRunExists, SchemaOutdated) as exc:
         raise SystemExit(f"\n{exc}\n")
     return 0
 

@@ -3,9 +3,9 @@ Run the complete QuantumGuard test suite.
 
     python -m tests.run_all
 
-Combines tests/test_all.py (Phases 1-5) and tests/test_phase67.py
-(Phases 6-7 and the completeness attestation). Nothing requires
-PostgreSQL, eBPF or root.
+Combines tests/test_all.py (Phases 1-5), tests/test_phase67.py (Phases 6-7
+and the completeness attestation) and tests/test_tamper.py (bug regressions
+and the tamper harness). Nothing requires PostgreSQL, eBPF or root.
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ def main() -> int:
     loader = unittest.TestLoader()
     suite = unittest.TestSuite()
 
-    for name in ("tests.test_all", "tests.test_phase67"):
+    for name in ("tests.test_all", "tests.test_phase67", "tests.test_tamper"):
         __import__(name)
         suite.addTests(loader.loadTestsFromModule(sys.modules[name]))
 

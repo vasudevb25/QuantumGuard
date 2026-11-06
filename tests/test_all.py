@@ -23,6 +23,8 @@ to the class that guards it:
 """
 from __future__ import annotations
 
+from tests import _sandbox  # noqa: F401  (must come before project imports)
+
 import copy
 import hashlib
 import random

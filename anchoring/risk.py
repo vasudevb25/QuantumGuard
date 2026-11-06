@@ -70,16 +70,11 @@ from typing import Any
 
 # Tier boundaries on the [0, 1] score. Overridable through RiskPolicy.
 #
-# TIER2_THRESHOLD is calibrated, not chosen. Over 25 paired runs of
-# clean and tampered captures (tests/test_all.py::RiskCalibrationTest
-# reproduces the measurement), the highest score reached by any
-# partition of a clean capture was 0.07, while the lowest score reached
-# by the most suspicious partition of a tampered capture was 0.22.
-# 0.20 sits inside that gap: in the measured runs it anchored something
-# in every tampered capture and nothing in any clean one. An earlier
-# guessed value of 0.25 missed roughly a quarter of tampered runs, which
-# is why the number is now derived from the separation rather than set
-# by intuition.
+# TIER2_THRESHOLD sits between what clean and tampered captures score. Over
+# 15 paired runs (`python -m tests.benchmark` reproduces this), the highest
+# score of any partition in a clean capture was 0.018, and the lowest score of
+# the most suspicious partition in a tampered capture was 0.281. Those are the
+# trained attacks. An attack the detector misses scores like a clean capture.
 TIER1_THRESHOLD = 0.45      # immediate external anchor
 TIER2_THRESHOLD = 0.20      # batched external anchor
 # below TIER2_THRESHOLD -> tier 3, local hash chain only
@@ -376,8 +371,7 @@ class RiskScorer:
                 "blocking_violations": blocking,
                 "advisory_violations": advisory,
                 "unattested_gaps": gaps,
-                "flagged_nodes": sum(1 for edge in (edges or [])
-                                     for node in edge if node in suspicious),
+                "flagged_nodes": len(nodes & set(suspicious)),
             },
         }
 
@@ -386,7 +380,7 @@ class RiskScorer:
                   partitions: list[dict[str, Any]] | None = None,
                   tamper_alert_indices: set[int] | None = None
                   ) -> list[dict[str, Any]]:
-        """Score a whole sealed run, newest evidence first."""
+        """Score a whole sealed run, in partition order."""
 
         tamper_alert_indices = tamper_alert_indices or set()
 

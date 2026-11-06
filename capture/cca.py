@@ -85,10 +85,9 @@ class SessionManager:
         """Highest sequence already stored, or 0 for a fresh database."""
         if self.store is None:
             return 0
-        try:
-            events = self.store.load_events()
-        except Exception:                       # pragma: no cover
-            return 0
+        # A failed read must stop the capture. Assuming 0 would restart
+        # numbering at 1 and collide with everything already stored.
+        events = self.store.load_events()
         if not events:
             return 0
         self.resumed_from = max(int(event.get("sequence") or 0)
@@ -164,6 +163,16 @@ class CCA:
         self.last = seq
         return Attestation(False, expected, seq, missing, self.run_id)
 
+    def record_loss(self, count: int) -> Attestation | None:
+        """Attest losses that no later event will reveal, at end of capture."""
+        if count <= 0:
+            return None
+        expected = self.last + 1
+        missing = list(range(expected, expected + count))
+        self.missing.extend(missing)
+        self.last = missing[-1]
+        return Attestation(False, expected, self.last + 1, missing, self.run_id)
+
     # ------------------------------------------------------------------
 
     def certificate(self, signer=None) -> dict[str, Any]:
@@ -208,16 +217,18 @@ def _digest(body: dict[str, Any]) -> str:
     return hashlib.sha256(b"\x04QG-CCA-CERT\x00" + encoded).hexdigest()
 
 
-def verify_certificate(certificate: dict[str, Any]) -> dict[str, Any]:
-    """Verify a completeness certificate without trusting its source."""
+def verify_certificate(certificate: dict[str, Any],
+                       verifier=None) -> dict[str, Any]:
+    """Verify a completeness certificate. Pass a pinned DualVerifier to also
+    require that it came from the expected key."""
     from crypto.integrity import DualVerifier
 
     body = certificate.get("body", {})
     recomputed = _digest(body)
     payload_ok = recomputed == certificate.get("payload_hash")
 
-    signature = DualVerifier().verify(certificate.get("payload_hash", ""),
-                                      certificate)
+    signature = (verifier or DualVerifier()).verify(
+        certificate.get("payload_hash", ""), certificate)
     return {
         "ok": payload_ok and signature["ok"],
         "payload_ok": payload_ok,

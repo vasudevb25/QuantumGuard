@@ -23,7 +23,7 @@ python -m tests.run_all
 python main.py demo --partition-size 16
 ```
 
-Expect `76 tests, 0 failed, 0 errors`, then a full attack demonstration.
+Expect `124 tests, 0 failed, 0 errors`, then a full attack demonstration.
 
 ---
 
@@ -42,7 +42,7 @@ python main.py keys                       # regenerate under the new phrase
 ## 3. Tests and measured results
 
 ```bash
-python -m tests.run_all                   # all 76
+python -m tests.run_all                   # all 124
 python -m tests.test_all                  # Phases 1-5   (27)
 python -m tests.test_phase67              # Phases 6-7   (49)
 
@@ -215,7 +215,7 @@ python main.py certify evidence/completeness_a1b2c3d4.json
 ### Visualise
 
 ```bash
-python graph/visualize.py                 # graphs/provenance_graph.png
+python main.py visualize                  # graphs/provenance_graph.png, one box per program
 ```
 
 ---
@@ -328,6 +328,28 @@ Deleting `ledger/` discards every external anchor.
 
 ---
 
+## 12a. Tamper testing
+
+`python main.py tamper` attacks copies of the evidence and scores each layer
+separately. It uses a temporary key store and ledger, so it never changes the
+real graph, evidence, keys or ledger.
+
+```bash
+python main.py tamper test --trials 30                    # full scorecard
+python main.py tamper apply --attack adaptive_forgery     # one tampered copy
+python main.py detect --graph graphs/tampered_adaptive_forgery.gpickle \
+       --output evidence/tampered_detection.json          # does the detector see it?
+python main.py verify --graph graphs/tampered_adaptive_forgery.gpickle   # does the seal?
+```
+
+Graph attacks come in two families: `deletion/reorder/forgery/timeshift` at
+`_crude` and `_expert` levels, which the GNN trained on, and `adaptive_deletion`,
+`tail_truncate`, `adaptive_reorder`, `adaptive_forgery`, `binary_swap`,
+`uid_rewrite` and `flag_abuse`, which it never saw. Evidence attacks modify the
+sealed records and the ledger instead. Results are saved to
+`evaluation/tamper_report.json`, and the exit status is 2 if an evidence attack
+goes undetected.
+
 ## 13. Full run, start to finish
 
 ```bash
@@ -349,5 +371,6 @@ python main.py graph
 python main.py train --graph graphs/provenance_graph.gpickle --epochs 40
 python main.py all
 python main.py verify
+python main.py tamper test --trials 30
 python -m tests.benchmark --json evidence/benchmark.json
 ```

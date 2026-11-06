@@ -28,7 +28,3 @@ dilithium-py>=1.0
 # out by default.
 # liboqs-python>=0.10
 
-# Optional: nicer graph/visualize.py layout via Graphviz's `dot`.
-# graph/visualize.py falls back to a spring layout if this isn't
-# installed, so it is not required.
-# pygraphviz>=1.12

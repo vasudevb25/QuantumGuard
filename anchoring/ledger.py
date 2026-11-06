@@ -84,7 +84,7 @@ class Ledger(Protocol):
     def lookup(self, merkle_root: str) -> dict[str, Any] | None:
         """Find the receipt anchoring a given root, if any."""
 
-    def verify(self) -> dict[str, Any]:
+    def verify(self, verifier=None) -> dict[str, Any]:
         """Re-verify the whole chain independently."""
 
 
@@ -189,11 +189,15 @@ class LocalLedger:
                 return receipt
         return None
 
-    def verify(self) -> dict[str, Any]:
-        """Re-verify every block: hash, chain linkage, both signatures."""
+    def verify(self, verifier=None) -> dict[str, Any]:
+        """Re-verify every block: hash, chain linkage, both signatures.
+
+        Pass a pinned DualVerifier; without one, a chain rebuilt and re-signed
+        with an attacker's own key also verifies.
+        """
         from crypto.integrity import DualVerifier
 
-        verifier = DualVerifier()
+        verifier = verifier or DualVerifier()
         errors: list[str] = []
         previous = GENESIS
 
@@ -261,7 +265,7 @@ class FabricLedger:
     def lookup(self, merkle_root: str) -> dict[str, Any] | None:
         self._unavailable()
 
-    def verify(self) -> dict[str, Any]:
+    def verify(self, verifier=None) -> dict[str, Any]:
         self._unavailable()
 
 

@@ -78,9 +78,12 @@ class AttackSimulator:
         node      whole processes removed, taking their relations
         window    a contiguous sequence range removed, which is what
                   wiping a time period looks like
+        insert    fabricated relations added
+        mixed     insert, then edge removal
+        edit      relations kept but their timing rewritten
     """
 
-    MODES = ("edge", "node", "window", "insert", "mixed")
+    MODES = ("edge", "node", "window", "insert", "mixed", "edit")
 
     @staticmethod
     def poison(graph, ratio: float = 0.15, seed: int | None = None,
@@ -113,6 +116,15 @@ class AttackSimulator:
                 return damaged
             # "mixed" continues into deletion below
             mode = "edge"
+
+        if mode == "edit":
+            edges = list(damaged.edges())
+            rng.shuffle(edges)
+            for source, target in edges[:int(len(edges) * ratio)]:
+                damaged.edges[source, target]["ts"] = (
+                    int(damaged.edges[source, target].get("ts") or 0)
+                    + rng.randint(10 ** 9, 10 ** 10))
+            return damaged
 
         if mode == "edge":
             edges = list(damaged.edges())
@@ -163,15 +175,16 @@ class RecoveryEngine:
     rather than "some events seem to be missing", and it is only
     possible because Phase 5 sealed the leaf hashes.
 
-    Causal bridging
-    ---------------
+    Causal bridging is an upper bound, not a capability
+    ---------------------------------------------------
     When a process is deleted, its parent and children are orphaned and
-    the causal chain breaks. Where the sealed evidence proves a
-    now-missing process once linked two surviving ones, a bridge edge is
-    inserted, marked `inferred=True`. An inferred edge records that a
-    causal link existed without claiming to know its detail - and
-    crucially it is never counted as recovered evidence by RA, only as
-    recovered *reachability* by GRR.
+    the causal chain breaks. `recover(damaged, original)` adds an
+    `inferred=True` edge across the hole - but working out where the hole
+    was requires the original graph, and sealed evidence holds only leaf
+    hashes, which cannot be turned back into edges. A real investigator
+    does not have that information. So the bridged figure is reported
+    only as GRR_bridged (what perfect topology backup would give), and
+    GRR and FSI are computed without it.
     """
 
     @staticmethod
@@ -267,8 +280,9 @@ class SurvivabilityMetrics:
         reachability than one at a leaf, and counting edges misses that
         entirely.
 
-        Inferred bridges count here - restoring the ability to walk a
-        path is exactly what they do - but never in RA.
+        evaluate() passes the unbridged graph for GRR, so this measures
+        what an investigator can actually walk. Passing a bridged graph
+        gives the GRR_bridged upper bound.
         """
         shared = [node for node in original.nodes() if node in recovered]
         if len(shared) < 2:
@@ -316,10 +330,16 @@ class SurvivabilityMetrics:
                            relations from fabricated ones and must
                            assert everything that survived. RA then
                            falls in proportion to what the attacker
-                           inserted.
+                           inserted or edited.
 
         Running both is how this project quantifies what sealing is
-        worth, rather than asserting it.
+        worth, rather than asserting it. Note that the sealed figure is
+        100% by construction (a matching leaf hash IS the original
+        relation); the information is in the unsealed figure and the gap
+        between them.
+
+        A relation counts as genuine only if its content matches too, not
+        merely its endpoints - otherwise an edited relation passes.
 
         Inferred bridges are excluded either way: they are labelled
         reconstructions, and crediting them would let the system score
@@ -339,8 +359,11 @@ class SurvivabilityMetrics:
 
         if not asserted:
             return 0.0
-        return round(100.0 * len(asserted & set(original.edges()))
-                     / len(asserted), 2)
+        from crypto.integrity import leaf_hash
+        genuine = sum(1 for u, v in asserted
+                      if original.has_edge(u, v)
+                      and leaf_hash(recovered, u, v) == leaf_hash(original, u, v))
+        return round(100.0 * genuine / len(asserted), 2)
 
     @staticmethod
     def fsi(pis: float, epr: float, grr: float,
@@ -369,34 +392,29 @@ def evaluate(original, ratio: float = 0.15, seed: int | None = None,
              seal_if_missing: bool = True) -> dict[str, Any]:
     """Run one attack/recovery experiment and return its measures.
 
-    `records` are the Phase 5 sealed partitions. Without them PIS has
-    nothing to verify against, so by default the graph is sealed in
-    memory first - survivability is a property of sealed evidence, and
-    measuring it against an unsealed graph would quietly report a weaker
-    number as though it were the real one.
+    `records` are the Phase 5 sealed partitions. Without them, the leaf
+    hashes of `original` are computed here: PIS compares hashes and needs
+    no signature, so an experiment never depends on unlocking the key
+    store. It used to, and a locked store silently scored PIS at 0.
     """
 
     sealed_leaves: set[str] | None = None
     leaf_of = None
     degraded = []
 
-    if records is None and seal_if_missing:
-        try:
-            from crypto.integrity import IntegrityService
-            records = IntegrityService().seal(original, persist=False)
-        except Exception as exc:          # pragma: no cover - env dependent
-            degraded.append(f"could not seal for verification: {exc}")
-
-    if records:
-        from crypto.integrity import _merkle_leaf, leaf_hash
-        leaf_of = lambda g, u, v: _merkle_leaf(leaf_hash(g, u, v)).hex()  # noqa: E731
-        sealed_leaves = {leaf for record in records
-                         for leaf in record.get("leaf_hashes", [])}
+    if records or seal_if_missing:
+        from crypto.integrity import SEAL_FORMAT, _merkle_leaf, leaf_hash
+        seal_format = (records[0].get("seal_format") or 1) if records else SEAL_FORMAT
+        leaf_of = lambda g, u, v: _merkle_leaf(leaf_hash(g, u, v, seal_format)).hex()  # noqa: E731
+        sealed_leaves = ({leaf for record in records
+                          for leaf in record.get("leaf_hashes", [])} if records
+                         else {leaf_of(original, u, v) for u, v in original.edges()})
     else:
         degraded.append("no sealed evidence: PIS could not be computed")
 
     damaged = AttackSimulator.poison(original, ratio, seed, mode)
-    recovered = RecoveryEngine.recover(damaged, original)
+    recovered = RecoveryEngine.recover(damaged, bridge=False)
+    bridged = RecoveryEngine.recover(damaged, original)
 
     classification = (RecoveryEngine.classify(damaged, sealed_leaves, leaf_of)
                       if sealed_leaves else
@@ -414,6 +432,7 @@ def evaluate(original, ratio: float = 0.15, seed: int | None = None,
         "PIS": pis,
         "EPR": epr,
         "GRR": grr,
+        "GRR_bridged": SurvivabilityMetrics.grr(original, bridged),
         "RA": accuracy,
         "FSI": SurvivabilityMetrics.fsi(pis, epr, grr, accuracy),
         "conditions": {
@@ -425,7 +444,7 @@ def evaluate(original, ratio: float = 0.15, seed: int | None = None,
             "surviving_nodes": recovered.number_of_nodes(),
             "surviving_relations": recovered.number_of_edges(),
             "inferred_bridges": sum(
-                1 for _, _, attrs in recovered.edges(data=True)
+                1 for _, _, attrs in bridged.edges(data=True)
                 if attrs.get("inferred")),
         },
         "evidence": {
@@ -488,7 +507,7 @@ def format_report(metrics: dict[str, Any]) -> str:
         "=" * 62,
         "  QuantumGuard - Forensic Survivability",
         "=" * 62,
-        f"  damage model      : {conditions['poison_mode']} removal, "
+        f"  damage model      : {conditions['poison_mode']}, "
         f"{conditions['poison_ratio']:.0%}",
         f"  graph             : {conditions['original_nodes']} nodes / "
         f"{conditions['original_relations']} relations  ->  "
@@ -508,8 +527,8 @@ def format_report(metrics: dict[str, Any]) -> str:
         lines.append(f"  unsealed present  : {evidence['unsealed_present']}"
                      f"   (inserted after sealing)")
     if conditions["inferred_bridges"]:
-        lines.append(f"  inferred bridges  : {conditions['inferred_bridges']}"
-                     f"   (reachability only, excluded from RA)")
+        lines.append(f"  GRR with bridges  : {metrics['GRR_bridged']:.2f} %"
+                     f"   (upper bound: needs the original topology)")
     for note in metrics.get("degraded", []):
         lines.append(f"  NOTE: {note}")
     lines.append("=" * 62)
