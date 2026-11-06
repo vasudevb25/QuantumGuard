@@ -17,7 +17,7 @@ def main() -> int:
     loader = unittest.TestLoader()
     suite = unittest.TestSuite()
 
-    for name in ("tests.test_all", "tests.test_phase67", "tests.test_tamper"):
+    for name in ("tests.test_all", "tests.test_phase67", "tests.test_tamper", "tests.test_dashboard"):
         __import__(name)
         suite.addTests(loader.loadTestsFromModule(sys.modules[name]))
 

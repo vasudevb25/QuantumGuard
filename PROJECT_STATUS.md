@@ -17,7 +17,7 @@ to be checked against the code, not taken on trust.
 | **6. Risk-adaptive anchoring** | risk scoring, 3-tier anchoring (local / batched / Fabric) | ✅ **Done** — six-signal risk model, calibrated thresholds, second-order batching, append-only signed ledger. *Fabric adapter is an interface, not a simulation* |
 | **7. Survivability evaluation** | PIS, EPR, GRR, RA, FSI | ✅ **Done** — five measures, five damage models, sealing-benefit experiment |
 
-**All seven phases implemented.** 124 tests pass with no PostgreSQL, no
+**All seven phases implemented.** 144 tests pass with no PostgreSQL, no
 eBPF and no root.
 
 ---

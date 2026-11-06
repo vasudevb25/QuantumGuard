@@ -23,7 +23,7 @@ python -m tests.run_all
 python main.py demo --partition-size 16
 ```
 
-Expect `124 tests, 0 failed, 0 errors`, then a full attack demonstration.
+Expect `144 tests, 0 failed, 0 errors`, then a full attack demonstration.
 
 ---
 
@@ -42,7 +42,7 @@ python main.py keys                       # regenerate under the new phrase
 ## 3. Tests and measured results
 
 ```bash
-python -m tests.run_all                   # all 124
+python -m tests.run_all                   # all 144
 python -m tests.test_all                  # Phases 1-5   (27)
 python -m tests.test_phase67              # Phases 6-7   (49)
 
@@ -349,6 +349,24 @@ Graph attacks come in two families: `deletion/reorder/forgery/timeshift` at
 sealed records and the ledger instead. Results are saved to
 `evaluation/tamper_report.json`, and the exit status is 2 if an evidence attack
 goes undetected.
+
+## 12b. Dashboard
+
+```bash
+python main.py dashboard          # then open http://127.0.0.1:8765
+```
+
+A local web console. It uses only the Python standard library and listens only
+on 127.0.0.1.
+
+- **Live views** (Command Center, Capture, Provenance Graph, Detection, Evidence
+  Seal, Anchoring) read your real data and never write. Verification uses public
+  keys, so no passphrase is needed.
+- **Simulation views** (Attack Lab, Pipeline Simulator, Survivability, Tamper
+  Scorecard) run the real project code on a copy, in a temporary directory with a
+  throwaway key store and ledger, which is deleted afterwards.
+
+Capture still starts from a terminal, because it needs your `sudo` password.
 
 ## 13. Full run, start to finish
 

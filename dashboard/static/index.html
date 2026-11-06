@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QuantumGuard Command Center</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 36'%3E%3Cpath d='M16 1 30 6v11c0 9-6 15-14 18C8 32 2 26 2 17V6z' fill='%23060b11' stroke='%232fd4e8' stroke-width='2'/%3E%3Cpath d='m9.5 18 4.5 4.5 8.5-9' fill='none' stroke='%232fd4e8' stroke-width='2.4'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <a class="brand" href="#overview" aria-label="QuantumGuard home">
+      <svg viewBox="0 0 32 36" width="26" height="30" aria-hidden="true"><path d="M16 1 30 6v11c0 9-6 15-14 18C8 32 2 26 2 17V6z" fill="none" stroke="currentColor" stroke-width="2"/><path d="m9.5 18 4.5 4.5 8.5-9" fill="none" stroke="currentColor" stroke-width="2.4"/></svg>
+      <span><b>QUANTUMGUARD</b><small>Provenance integrity</small></span>
+    </a>
+    <nav id="nav" aria-label="Views"></nav>
+    <div class="side-foot" id="sidefoot"></div>
+  </aside>
+  <main class="main">
+    <header class="top">
+      <div><div class="crumb" id="crumb"></div><h1 id="title"></h1></div>
+      <div class="top-right"><span class="badge" id="mode"></span><span class="clock" id="clock"></span></div>
+    </header>
+    <div id="view" class="view" tabindex="-1"></div>
+  </main>
+</div>
+<div id="tip" class="tip" hidden></div>
+<script src="/app.js"></script>
+</body>
+</html>

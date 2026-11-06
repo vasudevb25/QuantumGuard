@@ -56,7 +56,7 @@ python main.py keys
 python -m tests.run_all
 ```
 
-Expect `124 tests, 0 failed, 0 errors`.
+Expect `144 tests, 0 failed, 0 errors`.
 
 ### 2.2 The demonstration
 
@@ -429,7 +429,7 @@ fabricated transaction id. Use `--ledger local`.
 ## 10. Before a review — checklist
 
 ```bash
-python -m tests.run_all                                   # 124/124
+python -m tests.run_all                                   # 144/144
 python main.py tamper test --trials 30                    # which layer sees what
 export QG_KEYSTORE_PASSPHRASE='<your own>'                # not the default
 python main.py capture                                    # 15+ min of real use

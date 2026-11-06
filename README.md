@@ -13,7 +13,7 @@ quantifies how much of it would survive a compromise.
 > privileges as the logging system itself. QuantumGuard treats the audit
 > record as the thing under attack.
 
-**Status: all seven phases implemented.** 124 tests pass with no
+**Status: all seven phases implemented.** 144 tests pass with no
 PostgreSQL, eBPF or root. Limitations are stated in
 [Known limitations](#known-limitations) rather than left for a reader to
 discover.
@@ -417,6 +417,24 @@ separately as an upper bound.
 
 ---
 
+## Dashboard
+
+```bash
+python main.py dashboard          # then open http://127.0.0.1:8765
+```
+
+A local web console. It uses only the Python standard library and listens only
+on 127.0.0.1.
+
+- **Live views** (Command Center, Capture, Provenance Graph, Detection, Evidence
+  Seal, Anchoring) read your real data and never write. Verification uses public
+  keys, so no passphrase is needed.
+- **Simulation views** (Attack Lab, Pipeline Simulator, Survivability, Tamper
+  Scorecard) run the real project code on a copy, in a temporary directory with a
+  throwaway key store and ledger, which is deleted afterwards.
+
+Capture still starts from a terminal, because it needs your `sudo` password.
+
 ## Tamper testing
 
 `python main.py tamper` attacks copies of the evidence and scores each layer
@@ -443,7 +461,7 @@ goes undetected.
 
 ```bash
 pip install -r requirements.txt
-python -m tests.run_all                      # 124 tests
+python -m tests.run_all                      # 144 tests
 python main.py demo --partition-size 16      # full offline demonstration
 python -m tests.benchmark                    # regenerate every number above
 ```
@@ -471,6 +489,7 @@ anchoring/        Phase 6  risk scoring, ledger, tiered anchoring
   risk.py                  six-signal model + escalation rules
   ledger.py                append-only chained ledger; Fabric interface
   service.py               tier assignment, second-order batching
+dashboard/                 web console and sandboxed simulations
 evaluation/       Phase 7  attack simulation, recovery, five measures
                            tamper.py: attacks every layer and scores it
 core/                      config and the storage boundary
@@ -478,7 +497,8 @@ tests/
   test_all.py              Phases 1-5            (27 tests)
   test_phase67.py          Phases 6-7 and CCA    (49 tests)
   test_tamper.py           bug regressions and tamper harness (48 tests)
-  run_all.py               all three             (124 tests)
+  test_dashboard.py        dashboard and simulations (20 tests)
+  run_all.py               all four              (144 tests)
   benchmark.py             reproducible measured results
 ```
 

@@ -402,9 +402,10 @@ def _base_graphs(real, trials: int, seed: int) -> dict[str, list]:
 
 
 def attack_matrix(real, trials: int = 20, intensity: float = 0.1, seed: int = 7,
-                  model_path: str | None = None) -> dict[str, Any]:
+                  model_path: str | None = None, progress=None) -> dict[str, Any]:
     detector = PoisoningDetector(model_path=model_path)
     results: dict[str, Any] = {}
+    report = progress or (lambda *_: None)
 
     with tempfile.TemporaryDirectory() as directory:
         workspace = Path(directory)
@@ -413,7 +414,9 @@ def attack_matrix(real, trials: int = 20, intensity: float = 0.1, seed: int = 7,
                                    partition_size=64)
         verifier = EvidenceVerifier(store=service.store)
 
-        for source, graphs in _base_graphs(real, trials, seed).items():
+        bases = _base_graphs(real, trials, seed)
+        total, done = len(bases) * len(ATTACKS), 0
+        for source, graphs in bases.items():
             sealed = [(graph, service.seal(graph, run_id="t", persist=False))
                       for graph in graphs]
 
@@ -424,6 +427,8 @@ def attack_matrix(real, trials: int = 20, intensity: float = 0.1, seed: int = 7,
             attacks = {}
             for name, attack in ATTACKS.items():
                 tally = _Tally()
+                report(done, total, f"{source}: {name}")
+                done += 1
                 for position, (graph, records) in enumerate(sealed):
                     # crc32, because hash() of a string changes on every run
                     rng = random.Random(zlib.crc32(name.encode()) + seed + position)
@@ -590,8 +595,8 @@ def evidence_attacks() -> list[dict[str, Any]]:
 
 
 def run_all(real, trials: int = 20, intensity: float = 0.1, seed: int = 7,
-            model_path: str | None = None) -> dict[str, Any]:
-    matrix = attack_matrix(real, trials, intensity, seed, model_path)
+            model_path: str | None = None, progress=None) -> dict[str, Any]:
+    matrix = attack_matrix(real, trials, intensity, seed, model_path, progress)
     evidence = evidence_attacks()
     matrix["evidence_attacks"] = evidence
     matrix["evidence_attacks_missed"] = [item["attack"] for item in evidence

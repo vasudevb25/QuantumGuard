@@ -13,6 +13,7 @@
     python main.py tamper test            attack every layer and score it
     python main.py all                    the whole pipeline, in order
     python main.py demo                   offline end-to-end demonstration
+    python main.py dashboard              web dashboard and simulator
 """
 from __future__ import annotations
 
@@ -104,6 +105,11 @@ def graph(args):
 def visualize(args):
     from graph.visualize import main as draw_graph
     draw_graph(args.graph, args.output, args.max_programs)
+
+
+def dashboard(args):
+    from dashboard.server import run
+    run(args.port)
 
 
 def train(args):
@@ -485,6 +491,11 @@ def main(argv: list[str] | None = None) -> int:
     node.set_defaults(func=keys)
     sub.add_parser("capture", parents=[common]).set_defaults(func=capture)
     sub.add_parser("graph", parents=[common]).set_defaults(func=graph)
+
+    node = sub.add_parser("dashboard", parents=[common],
+                          help="web dashboard and simulator on 127.0.0.1")
+    node.add_argument("--port", type=int, default=8765)
+    node.set_defaults(func=dashboard)
 
     node = sub.add_parser("visualize", parents=[common],
                           help="draw what ran what, one box per program")
